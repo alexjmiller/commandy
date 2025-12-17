@@ -1,0 +1,215 @@
+#!/bin/zsh
+
+# commandy - Terminal session launcher
+# Provides quick access to common development tasks
+
+PROJECTS_DIR="$HOME/Projects"
+
+# Colors
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
+show_menu() {
+    print ""
+    print "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    print "${BLUE}  commandy${NC} - What would you like to do?"
+    print "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    print ""
+    print "  ${GREEN}1)${NC} BlueStudio"
+    print "  ${GREEN}2)${NC} Browse Projects"
+    print "  ${GREEN}3)${NC} Setup New Project"
+    print "  ${GREEN}4)${NC} Skip"
+    print ""
+}
+
+bluestudio_menu() {
+    print ""
+    print "${BLUE}BlueStudio:${NC}"
+    print ""
+    print "  ${GREEN}1)${NC} Start (both services)"
+    print "  ${GREEN}2)${NC} Stop all services"
+    print "  ${GREEN}3)${NC} Restart all services"
+    print "  ${GREEN}4)${NC} Check status"
+    print "  ${GREEN}5)${NC} View API logs"
+    print "  ${GREEN}6)${NC} View Dashboard logs"
+    print "  ${GREEN}7)${NC} Back"
+    print ""
+
+    read "choice?Enter choice: "
+
+    case $choice in
+        1)
+            print "${YELLOW}Starting BlueStudio...${NC}"
+            bluestudio
+            ;;
+        2)
+            print "${YELLOW}Stopping BlueStudio...${NC}"
+            bluestudio stop
+            ;;
+        3)
+            print "${YELLOW}Restarting BlueStudio...${NC}"
+            bluestudio restart
+            ;;
+        4)
+            bluestudio status
+            print ""
+            read "?Press Enter to continue..."
+            bluestudio_menu
+            ;;
+        5)
+            bluestudio logs api
+            ;;
+        6)
+            bluestudio logs dashboard
+            ;;
+        7)
+            return
+            ;;
+        *)
+            print "Invalid choice"
+            bluestudio_menu
+            ;;
+    esac
+}
+
+browse_projects() {
+    print ""
+    print "${BLUE}Select a project:${NC}"
+    print ""
+
+    # Get list of directories in Projects folder
+    local projects=()
+    local i=1
+
+    for dir in "$PROJECTS_DIR"/*/; do
+        if [[ -d "$dir" ]]; then
+            local name=$(basename "$dir")
+            projects+=("$name")
+            print "  ${GREEN}$i)${NC} $name"
+            ((i++))
+        fi
+    done
+
+    print "  ${GREEN}$i)${NC} Back to menu"
+    print ""
+
+    read "choice?Enter choice: "
+
+    if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice < i )); then
+        local selected="${projects[$choice]}"
+        local project_path="$PROJECTS_DIR/$selected"
+
+        print ""
+        print "${BLUE}Project: ${NC}$selected"
+        print ""
+        print "  ${GREEN}1)${NC} Open folder"
+        print "  ${GREEN}2)${NC} Launch claude-logged"
+        print "  ${GREEN}3)${NC} Back"
+        print ""
+
+        read "action?Enter choice: "
+
+        case $action in
+            1)
+                print "${YELLOW}Changing to $project_path${NC}"
+                cd "$project_path"
+                exec zsh
+                ;;
+            2)
+                print "${YELLOW}Launching claude-logged in $selected...${NC}"
+                cd "$project_path"
+                claude-logged
+                exec zsh
+                ;;
+            3)
+                browse_projects
+                ;;
+        esac
+    elif (( choice == i )); then
+        return
+    else
+        print "Invalid choice"
+        browse_projects
+    fi
+}
+
+setup_new_project() {
+    print ""
+    print -n "${BLUE}Enter new project name: ${NC}"
+    read project_name
+
+    if [[ -z "$project_name" ]]; then
+        print "Project name cannot be empty"
+        return
+    fi
+
+    local project_path="$PROJECTS_DIR/$project_name"
+
+    if [[ -d "$project_path" ]]; then
+        print "${YELLOW}Project already exists!${NC}"
+        return
+    fi
+
+    print "${YELLOW}Creating project: $project_name${NC}"
+    mkdir -p "$project_path"
+    cd "$project_path"
+    git init
+
+    print ""
+    print "${GREEN}Project '$project_name' created and initialized with git!${NC}"
+    print "${CYAN}Location: $project_path${NC}"
+    print ""
+
+    print "  ${GREEN}1)${NC} Start working here"
+    print "  ${GREEN}2)${NC} Launch claude-logged"
+    print "  ${GREEN}3)${NC} Back to menu"
+    print ""
+
+    read "action?Enter choice: "
+
+    case $action in
+        1)
+            exec zsh
+            ;;
+        2)
+            claude-logged
+            exec zsh
+            ;;
+        3)
+            cd - > /dev/null
+            return
+            ;;
+    esac
+}
+
+# Main loop
+main() {
+    while true; do
+        show_menu
+        read "choice?Enter choice: "
+
+        case $choice in
+            1)
+                bluestudio_menu
+                ;;
+            2)
+                browse_projects
+                ;;
+            3)
+                setup_new_project
+                ;;
+            4|"")
+                print "${CYAN}Have a great session!${NC}"
+                break
+                ;;
+            *)
+                print "Invalid choice, please try again"
+                ;;
+        esac
+    done
+}
+
+main
