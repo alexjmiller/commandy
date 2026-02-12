@@ -900,11 +900,16 @@ func openShellInDir(dir string) tea.Cmd {
 }
 
 func launchClaudeLogged(dir string) tea.Cmd {
-	cmd := exec.Command("claude-logged")
-	cmd.Dir = dir
-	return tea.ExecProcess(cmd, func(err error) tea.Msg {
-		return tea.Quit()
-	})
+	return tea.Sequence(
+		tea.ClearScreen,
+		func() tea.Msg {
+			cmd := exec.Command("claude-logged")
+			cmd.Dir = dir
+			return tea.ExecProcess(cmd, func(err error) tea.Msg {
+				return tea.Quit()
+			})()
+		},
+	)
 }
 
 func checkPorts() tea.Cmd {
