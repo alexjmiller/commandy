@@ -18,8 +18,6 @@ type menuState int
 
 const (
 	stateMain menuState = iota
-	stateBlueStudio
-	stateFintrac
 	stateBrowseProjects
 	stateProjectActions
 	stateSetupProject
@@ -30,6 +28,8 @@ const (
 	statePortAuthority
 	stateSystemMaintenance
 	stateNpmUtilities
+	stateSessions
+	stateSessionActions
 	stateSelectProject
 	stateInputPort
 	stateInputProjectName
@@ -52,10 +52,10 @@ const (
 )
 
 var (
-	projectsDir   = filepath.Join(os.Getenv("HOME"), "Projects")
-	hostname      string
-	execPath      string // Path to the commandy executable directory
-	imageRendered bool   // Track if Kitty image has been rendered
+	projectsDir  = filepath.Join(os.Getenv("HOME"), "Projects")
+	hostname     string
+	execPath     string // Path to the commandy executable directory
+	cachedBanner string // Cached banner output to avoid re-running chafa on every render
 
 	// Port Authority config
 	portAuthorityAPI       = "http://zynx.lan:3030/api"
@@ -181,6 +181,9 @@ type model struct {
 	selectedProject string
 	selectedPath    string
 	projectAction   projectAction
+	activeSessions  map[string]bool
+	sessionNames    []string
+	selectedSession string
 	textInput       textinput.Model
 	inputPrompt     string
 	message         string
@@ -357,8 +360,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m model) goBack() model {
 	switch m.state {
-	case stateBlueStudio, stateFintrac, stateBrowseProjects, stateSetupProject, stateTools:
+	case stateBrowseProjects, stateSetupProject, stateTools, stateSessions:
 		m.state = stateMain
+	case stateSessionActions:
+		m.state = stateSessions
 	case stateProjectActions:
 		m.state = stateBrowseProjects
 	case stateSetupProjectConfirm:
@@ -384,23 +389,37 @@ func (m model) goBack() model {
 func (m model) getMenuItems() []string {
 	switch m.state {
 	case stateMain:
-		if hostname == "mac" {
-			return []string{"BlueStudio", "Browse Projects", "Setup New Project", "Tools", "Skip"}
-		}
-		return []string{"Fintrac", "Browse Projects", "Setup New Project", "Tools", "Skip"}
-
-	case stateBlueStudio:
-		return []string{"Start (both services)", "Stop all services", "Restart all services", "Check status", "View API logs", "View Dashboard logs", "Back"}
-
-	case stateFintrac:
-		return []string{"Start (all services)", "Stop all services", "Restart all services", "Check status", "View Backend logs", "View Frontend logs", "Back"}
+		return []string{"Browse Projects", "Setup New Project", "Tools", "Sessions", "Skip"}
 
 	case stateBrowseProjects:
 		items := m.projects
 		return append(items, "Back to menu")
 
 	case stateProjectActions:
-		return []string{"Open folder", "Launch claude-logged", "Back"}
+		sessionName := sanitizeTmuxName(m.selectedProject)
+		hasSession := m.activeSessions[sessionName]
+		var label string
+		if hasSession {
+			label = "Attach"
+		} else {
+			label = "Open"
+		}
+		items := []string{label, "Claude-logged"}
+		if hasSession {
+			items = append(items, "Kill session")
+		}
+		items = append(items, "Back")
+		return items
+
+	case stateSessions:
+		items := m.sessionNames
+		if len(items) == 0 {
+			return []string{"Back"}
+		}
+		return append(items, "Back")
+
+	case stateSessionActions:
+		return []string{"Resume", "Kill session", "Back"}
 
 	case stateSetupProjectConfirm:
 		return []string{"Start working here", "Launch claude-logged", "Back to menu"}
@@ -445,14 +464,14 @@ func (m model) handleSelection() (model, tea.Cmd) {
 	switch m.state {
 	case stateMain:
 		return m.handleMainMenu(selected)
-	case stateBlueStudio:
-		return m.handleBlueStudioMenu(selected)
-	case stateFintrac:
-		return m.handleFintracMenu(selected)
 	case stateBrowseProjects:
 		return m.handleBrowseProjects(selected)
 	case stateProjectActions:
 		return m.handleProjectActions(selected)
+	case stateSessions:
+		return m.handleSessions(selected)
+	case stateSessionActions:
+		return m.handleSessionActions(selected)
 	case stateSetupProjectConfirm:
 		return m.handleSetupConfirm(selected)
 	case stateTools:
@@ -476,12 +495,6 @@ func (m model) handleSelection() (model, tea.Cmd) {
 
 func (m model) handleMainMenu(selected string) (model, tea.Cmd) {
 	switch selected {
-	case "BlueStudio":
-		m.state = stateBlueStudio
-		m.cursor = 0
-	case "Fintrac":
-		m.state = stateFintrac
-		m.cursor = 0
 	case "Browse Projects":
 		m.state = stateBrowseProjects
 		m.cursor = 0
@@ -495,6 +508,10 @@ func (m model) handleMainMenu(selected string) (model, tea.Cmd) {
 	case "Tools":
 		m.state = stateTools
 		m.cursor = 0
+	case "Sessions":
+		m.state = stateSessions
+		m.cursor = 0
+		m.loadSessions()
 	case "Skip":
 		fmt.Println("\n" + successStyle.Render("Have a great session!"))
 		return m, tea.Quit
@@ -539,48 +556,10 @@ func (m *model) loadProjects(packageJsonOnly bool) {
 			}
 		}
 	}
-}
 
-func (m model) handleBlueStudioMenu(selected string) (model, tea.Cmd) {
-	switch selected {
-	case "Start (both services)":
-		return m, execAndQuit("bluestudio")
-	case "Stop all services":
-		return m, execAndQuit("bluestudio", "stop")
-	case "Restart all services":
-		return m, execAndQuit("bluestudio", "restart")
-	case "Check status":
-		return m, execAndReturn("bluestudio", "status")
-	case "View API logs":
-		return m, execAndQuit("bluestudio", "logs", "api")
-	case "View Dashboard logs":
-		return m, execAndQuit("bluestudio", "logs", "dashboard")
-	case "Back":
-		return m.goBack(), nil
+	if !packageJsonOnly {
+		m.activeSessions = tmuxListSessions()
 	}
-	return m, nil
-}
-
-func (m model) handleFintracMenu(selected string) (model, tea.Cmd) {
-	fintracCmd := filepath.Join(projectsDir, "fintrac", "fintrac")
-
-	switch selected {
-	case "Start (all services)":
-		return m, execAndReturn(fintracCmd, "start")
-	case "Stop all services":
-		return m, execAndReturn(fintracCmd, "stop")
-	case "Restart all services":
-		return m, execAndReturn(fintracCmd, "restart")
-	case "Check status":
-		return m, execAndReturn(fintracCmd, "status")
-	case "View Backend logs":
-		return m, execAndQuit(fintracCmd, "logs", "backend")
-	case "View Frontend logs":
-		return m, execAndQuit(fintracCmd, "logs", "frontend")
-	case "Back":
-		return m.goBack(), nil
-	}
-	return m, nil
 }
 
 func (m model) handleBrowseProjects(selected string) (model, tea.Cmd) {
@@ -595,6 +574,7 @@ func (m model) handleBrowseProjects(selected string) (model, tea.Cmd) {
 			m.selectedPath = m.projectPaths[i]
 			m.state = stateProjectActions
 			m.cursor = 0
+			m.activeSessions = tmuxListSessions()
 			return m, nil
 		}
 	}
@@ -603,11 +583,105 @@ func (m model) handleBrowseProjects(selected string) (model, tea.Cmd) {
 }
 
 func (m model) handleProjectActions(selected string) (model, tea.Cmd) {
+	sessionName := sanitizeTmuxName(m.selectedProject)
+	exists := tmuxSessionExists(sessionName)
+
 	switch selected {
-	case "Open folder":
-		return m, openShellInDir(m.selectedPath)
-	case "Launch claude-logged":
-		return m, launchClaudeLogged(m.selectedPath)
+	case "Attach", "Open":
+		if exists {
+			if isInsideTmux() {
+				return m, func() tea.Msg {
+					exec.Command("tmux", "switch-client", "-t", sessionName).Run()
+					return tea.Quit()
+				}
+			}
+			return m, execAndQuit("tmux", "attach", "-t", sessionName)
+		}
+		// Create new session
+		if isInsideTmux() {
+			return m, func() tea.Msg {
+				exec.Command("tmux", "new-session", "-d", "-s", sessionName, "-c", m.selectedPath).Run()
+				exec.Command("tmux", "switch-client", "-t", sessionName).Run()
+				return tea.Quit()
+			}
+		}
+		return m, execAndQuit("tmux", "new-session", "-s", sessionName, "-c", m.selectedPath)
+
+	case "Claude-logged":
+		if exists {
+			// Add new window in existing session
+			exec.Command("tmux", "new-window", "-t", sessionName, "-c", m.selectedPath, "claude-logged").Run()
+			if isInsideTmux() {
+				return m, func() tea.Msg {
+					exec.Command("tmux", "switch-client", "-t", sessionName).Run()
+					return tea.Quit()
+				}
+			}
+			return m, execAndQuit("tmux", "attach", "-t", sessionName)
+		}
+		// Create new session running claude-logged
+		if isInsideTmux() {
+			return m, func() tea.Msg {
+				exec.Command("tmux", "new-session", "-d", "-s", sessionName, "-c", m.selectedPath, "claude-logged").Run()
+				exec.Command("tmux", "switch-client", "-t", sessionName).Run()
+				return tea.Quit()
+			}
+		}
+		return m, execAndQuit("tmux", "new-session", "-s", sessionName, "-c", m.selectedPath, "claude-logged")
+
+	case "Kill session":
+		exec.Command("tmux", "kill-session", "-t", sessionName).Run()
+		m.activeSessions = tmuxListSessions()
+		m.message = fmt.Sprintf("Killed tmux session '%s'", sessionName)
+		m.messageType = "success"
+		return m.goBack(), nil
+
+	case "Back":
+		return m.goBack(), nil
+	}
+	return m, nil
+}
+
+func (m *model) loadSessions() {
+	m.sessionNames = []string{}
+	sessions := tmuxListSessions()
+	for name := range sessions {
+		m.sessionNames = append(m.sessionNames, name)
+	}
+}
+
+func (m model) handleSessions(selected string) (model, tea.Cmd) {
+	if selected == "Back" {
+		return m.goBack(), nil
+	}
+
+	m.selectedSession = selected
+	m.state = stateSessionActions
+	m.cursor = 0
+	return m, nil
+}
+
+func (m model) handleSessionActions(selected string) (model, tea.Cmd) {
+	switch selected {
+	case "Resume":
+		if isInsideTmux() {
+			return m, func() tea.Msg {
+				exec.Command("tmux", "switch-client", "-t", m.selectedSession).Run()
+				return tea.Quit()
+			}
+		}
+		return m, execAndQuit("tmux", "attach", "-t", m.selectedSession)
+	case "Kill session":
+		exec.Command("tmux", "kill-session", "-t", m.selectedSession).Run()
+		m.message = fmt.Sprintf("Killed tmux session '%s'", m.selectedSession)
+		m.messageType = "success"
+		m.loadSessions()
+		if len(m.sessionNames) == 0 {
+			m.state = stateSessions
+			m.cursor = 0
+			return m, nil
+		}
+		return m.goBack(), nil
 	case "Back":
 		return m.goBack(), nil
 	}
@@ -654,11 +728,27 @@ func (m model) createProject(name string) (model, tea.Cmd) {
 }
 
 func (m model) handleSetupConfirm(selected string) (model, tea.Cmd) {
+	sessionName := sanitizeTmuxName(m.selectedProject)
+
 	switch selected {
 	case "Start working here":
-		return m, openShellInDir(m.selectedPath)
+		if isInsideTmux() {
+			return m, func() tea.Msg {
+				exec.Command("tmux", "new-session", "-d", "-s", sessionName, "-c", m.selectedPath).Run()
+				exec.Command("tmux", "switch-client", "-t", sessionName).Run()
+				return tea.Quit()
+			}
+		}
+		return m, execAndQuit("tmux", "new-session", "-s", sessionName, "-c", m.selectedPath)
 	case "Launch claude-logged":
-		return m, launchClaudeLogged(m.selectedPath)
+		if isInsideTmux() {
+			return m, func() tea.Msg {
+				exec.Command("tmux", "new-session", "-d", "-s", sessionName, "-c", m.selectedPath, "claude-logged").Run()
+				exec.Command("tmux", "switch-client", "-t", sessionName).Run()
+				return tea.Quit()
+			}
+		}
+		return m, execAndQuit("tmux", "new-session", "-s", sessionName, "-c", m.selectedPath, "claude-logged")
 	case "Back to menu":
 		m.state = stateMain
 		m.cursor = 0
@@ -885,31 +975,36 @@ func execInDirAndQuit(dir, name string, args ...string) tea.Cmd {
 	})
 }
 
-func openShellInDir(dir string) tea.Cmd {
-	return func() tea.Msg {
-		fmt.Printf("\033[H\033[2J") // Clear screen
-		fmt.Printf("Changing to %s\n", dir)
-		os.Chdir(dir)
-		cmd := exec.Command("zsh")
-		cmd.Stdin = os.Stdin
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		cmd.Run()
-		return tea.Quit()
-	}
+// Tmux helpers
+
+func sanitizeTmuxName(name string) string {
+	name = strings.ReplaceAll(name, ".", "-")
+	name = strings.ReplaceAll(name, ":", "-")
+	return name
 }
 
-func launchClaudeLogged(dir string) tea.Cmd {
-	return tea.Sequence(
-		tea.ClearScreen,
-		func() tea.Msg {
-			cmd := exec.Command("claude-logged")
-			cmd.Dir = dir
-			return tea.ExecProcess(cmd, func(err error) tea.Msg {
-				return tea.Quit()
-			})()
-		},
-	)
+func isInsideTmux() bool {
+	return os.Getenv("TMUX") != ""
+}
+
+func tmuxListSessions() map[string]bool {
+	sessions := make(map[string]bool)
+	cmd := exec.Command("tmux", "list-sessions", "-F", "#{session_name}")
+	output, err := cmd.Output()
+	if err != nil {
+		return sessions
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		if line != "" {
+			sessions[line] = true
+		}
+	}
+	return sessions
+}
+
+func tmuxSessionExists(name string) bool {
+	cmd := exec.Command("tmux", "has-session", "-t", name)
+	return cmd.Run() == nil
 }
 
 func checkPorts() tea.Cmd {
@@ -1177,6 +1272,12 @@ func (m model) View() string {
 		return s.String()
 	}
 
+	// Empty sessions message
+	if m.state == stateSessions && len(m.sessionNames) == 0 {
+		s.WriteString(dimStyle.Render("  No active tmux sessions"))
+		s.WriteString("\n\n")
+	}
+
 	// Menu items
 	items := m.getMenuItems()
 
@@ -1226,14 +1327,14 @@ func (m model) getMenuTitle() string {
 	switch m.state {
 	case stateMain:
 		return "What would you like to do?"
-	case stateBlueStudio:
-		return "BlueStudio"
-	case stateFintrac:
-		return "Fintrac"
 	case stateBrowseProjects:
 		return "Select a project"
 	case stateProjectActions:
 		return fmt.Sprintf("Project: %s", m.selectedProject)
+	case stateSessions:
+		return "Tmux Sessions"
+	case stateSessionActions:
+		return fmt.Sprintf("Session: %s", m.selectedSession)
 	case stateSetupProject:
 		return "Setup New Project"
 	case stateSetupProjectConfirm:
@@ -1276,13 +1377,23 @@ func (m model) renderTwoColumnMenu(items []string) string {
 				style = selectedStyle
 			}
 			num := dimStyle.Render(fmt.Sprintf("%2d) ", leftIdx+1))
-			item := items[leftIdx]
-			if len(item) > colWidth-6 {
-				item = item[:colWidth-9] + "..."
+
+			indicator := ""
+			indicatorLen := 0
+			if m.state == stateBrowseProjects && items[leftIdx] != "Back to menu" {
+				if m.activeSessions[sanitizeTmuxName(items[leftIdx])] {
+					indicator = " " + lipgloss.NewStyle().Foreground(green).Render("●")
+					indicatorLen = 2
+				}
 			}
-			leftCol := cursor + num + style.Render(item)
-			// Pad to column width (accounting for ANSI codes)
-			padding := colWidth - len(items[leftIdx]) - 6
+
+			item := items[leftIdx]
+			maxLen := colWidth - 6 - indicatorLen
+			if len(item) > maxLen {
+				item = item[:maxLen-3] + "..."
+			}
+			leftCol := cursor + num + style.Render(item) + indicator
+			padding := colWidth - len(items[leftIdx]) - 6 - indicatorLen
 			if padding < 0 {
 				padding = 0
 			}
@@ -1300,11 +1411,22 @@ func (m model) renderTwoColumnMenu(items []string) string {
 				style = selectedStyle
 			}
 			num := dimStyle.Render(fmt.Sprintf("%2d) ", rightIdx+1))
-			item := items[rightIdx]
-			if len(item) > colWidth-6 {
-				item = item[:colWidth-9] + "..."
+
+			indicator := ""
+			indicatorLen := 0
+			if m.state == stateBrowseProjects && items[rightIdx] != "Back to menu" {
+				if m.activeSessions[sanitizeTmuxName(items[rightIdx])] {
+					indicator = " " + lipgloss.NewStyle().Foreground(green).Render("●")
+					indicatorLen = 2
+				}
 			}
-			s.WriteString(cursor + num + style.Render(item))
+
+			item := items[rightIdx]
+			maxLen := colWidth - 6 - indicatorLen
+			if len(item) > maxLen {
+				item = item[:maxLen-3] + "..."
+			}
+			s.WriteString(cursor + num + style.Render(item) + indicator)
 		}
 
 		s.WriteString("\n")
@@ -1313,7 +1435,7 @@ func (m model) renderTwoColumnMenu(items []string) string {
 	return s.String()
 }
 
-func (m model) renderBanner() string {
+func buildBanner() string {
 	logoPath := filepath.Join(execPath, "commandy2.png")
 
 	// Check if logo exists
@@ -1361,6 +1483,13 @@ func (m model) renderBanner() string {
 	}
 
 	return strings.Join(lines, "\n")
+}
+
+func (m model) renderBanner() string {
+	if cachedBanner == "" {
+		cachedBanner = buildBanner()
+	}
+	return cachedBanner
 }
 
 func main() {
