@@ -389,7 +389,11 @@ func (m model) goBack() model {
 func (m model) getMenuItems() []string {
 	switch m.state {
 	case stateMain:
-		return []string{"Browse Projects", "Setup New Project", "Tools", "Sessions", "Skip"}
+		items := []string{}
+		if hostname != "mac" {
+			items = append(items, "Connect to dev")
+		}
+		return append(items, "Browse Projects", "Setup New Project", "Tools", "Sessions", "Skip")
 
 	case stateBrowseProjects:
 		items := m.projects
@@ -495,6 +499,8 @@ func (m model) handleSelection() (model, tea.Cmd) {
 
 func (m model) handleMainMenu(selected string) (model, tea.Cmd) {
 	switch selected {
+	case "Connect to dev":
+		return m, execAndQuit("ssh", "dev")
 	case "Browse Projects":
 		m.state = stateBrowseProjects
 		m.cursor = 0
