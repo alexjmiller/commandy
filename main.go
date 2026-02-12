@@ -390,10 +390,14 @@ func (m model) getMenuItems() []string {
 	switch m.state {
 	case stateMain:
 		items := []string{}
-		if hostname != "mac" {
+		if hostname != "dev.lan" {
 			items = append(items, "Connect to dev")
 		}
-		return append(items, "Browse Projects", "Setup New Project", "Tools", "Sessions", "Skip")
+		items = append(items, "Browse Projects", "Setup New Project", "Tools")
+		if hostname == "dev.lan" {
+			items = append(items, "Sessions")
+		}
+		return append(items, "Skip")
 
 	case stateBrowseProjects:
 		items := m.projects
@@ -435,7 +439,7 @@ func (m model) getMenuItems() []string {
 		if hostname == "mac" {
 			return []string{"SSH to MacBookPro", "Open GitHub", "Prisma Studio (select project)", "PostgreSQL shell", "Back"}
 		}
-		return []string{"SSH to mac", "Open GitHub", "Prisma Studio (select project)", "PostgreSQL shell", "Back"}
+		return []string{"SSH to dev", "Open GitHub", "Prisma Studio (select project)", "PostgreSQL shell", "Back"}
 
 	case stateDevTools:
 		return []string{"Kill process on port", "Check port usage", "Start ngrok", "Git status (all projects)", "Git pull (all projects)", "Back"}
@@ -790,8 +794,8 @@ func (m model) handleQuickAccess(selected string) (model, tea.Cmd) {
 	switch selected {
 	case "SSH to MacBookPro":
 		return m, execAndQuit("ssh", "alexander@MacBookPro.local")
-	case "SSH to mac":
-		return m, execAndQuit("ssh", "alexander@mac.local")
+	case "SSH to dev":
+		return m, execAndQuit("ssh", "dev")
 	case "Open GitHub":
 		exec.Command("open", "https://github.com").Start()
 		m.message = "Opened GitHub in browser"
