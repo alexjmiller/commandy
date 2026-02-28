@@ -390,11 +390,11 @@ func (m model) getMenuItems() []string {
 	switch m.state {
 	case stateMain:
 		items := []string{}
-		if hostname != "dev.lan" {
+		if hostname != "dev.local" {
 			items = append(items, "Connect to dev")
 		}
 		items = append(items, "Browse Projects", "Setup New Project", "Tools")
-		if hostname == "dev.lan" {
+		if hostname == "dev.local" {
 			items = append(items, "Sessions")
 		}
 		return append(items, "Skip")
