@@ -620,7 +620,7 @@ func (m model) handleProjectActions(selected string) (model, tea.Cmd) {
 	case "Claude-logged":
 		if exists {
 			// Add new window in existing session
-			exec.Command("tmux", "new-window", "-t", sessionName, "-c", m.selectedPath, "claude-logged").Run()
+			exec.Command("tmux", "new-window", "-t", sessionName, "-c", m.selectedPath, "zsh", "-lc", "claude-logged").Run()
 			if isInsideTmux() {
 				return m, func() tea.Msg {
 					exec.Command("tmux", "switch-client", "-t", sessionName).Run()
@@ -632,12 +632,12 @@ func (m model) handleProjectActions(selected string) (model, tea.Cmd) {
 		// Create new session running claude-logged
 		if isInsideTmux() {
 			return m, func() tea.Msg {
-				exec.Command("tmux", "new-session", "-d", "-s", sessionName, "-c", m.selectedPath, "claude-logged").Run()
+				exec.Command("tmux", "new-session", "-d", "-s", sessionName, "-c", m.selectedPath, "zsh", "-lc", "claude-logged").Run()
 				exec.Command("tmux", "switch-client", "-t", sessionName).Run()
 				return tea.Quit()
 			}
 		}
-		return m, execAndQuit("tmux", "new-session", "-s", sessionName, "-c", m.selectedPath, "claude-logged")
+		return m, execAndQuit("tmux", "new-session", "-s", sessionName, "-c", m.selectedPath, "zsh", "-lc", "claude-logged")
 
 	case "Kill session":
 		exec.Command("tmux", "kill-session", "-t", sessionName).Run()
@@ -753,12 +753,12 @@ func (m model) handleSetupConfirm(selected string) (model, tea.Cmd) {
 	case "Launch claude-logged":
 		if isInsideTmux() {
 			return m, func() tea.Msg {
-				exec.Command("tmux", "new-session", "-d", "-s", sessionName, "-c", m.selectedPath, "claude-logged").Run()
+				exec.Command("tmux", "new-session", "-d", "-s", sessionName, "-c", m.selectedPath, "zsh", "-lc", "claude-logged").Run()
 				exec.Command("tmux", "switch-client", "-t", sessionName).Run()
 				return tea.Quit()
 			}
 		}
-		return m, execAndQuit("tmux", "new-session", "-s", sessionName, "-c", m.selectedPath, "claude-logged")
+		return m, execAndQuit("tmux", "new-session", "-s", sessionName, "-c", m.selectedPath, "zsh", "-lc", "claude-logged")
 	case "Back to menu":
 		m.state = stateMain
 		m.cursor = 0
