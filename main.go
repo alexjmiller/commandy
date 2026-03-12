@@ -225,6 +225,8 @@ type cmdFinishedMsg struct {
 	err    error
 }
 
+type returnToMenuMsg struct{}
+
 func runCommand(name string, args ...string) tea.Cmd {
 	return func() tea.Msg {
 		cmd := exec.Command(name, args...)
@@ -345,6 +347,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+	case returnToMenuMsg:
+		m.state = stateMain
+		m.cursor = 0
+		m.message = ""
+		m.messageType = ""
+		return m, nil
+
 	case cmdFinishedMsg:
 		if msg.err != nil {
 			m.message = fmt.Sprintf("Error: %v\n%s", msg.err, msg.output)
@@ -393,8 +402,11 @@ func (m model) getMenuItems() []string {
 		if hostname != "dev.lan" {
 			items = append(items, "Connect to dev")
 		}
+		if hostname != "mac" {
+			items = append(items, "Connect to mac")
+		}
 		items = append(items, "Browse Projects", "Setup New Project", "Tools")
-		if hostname == "dev.lan" {
+		if hostname == "dev.lan" && hasTmux() {
 			items = append(items, "Sessions")
 		}
 		return append(items, "Skip")
@@ -404,6 +416,9 @@ func (m model) getMenuItems() []string {
 		return append(items, "Back to menu")
 
 	case stateProjectActions:
+		if !hasTmux() {
+			return []string{"Open", "Claude-logged", "Back"}
+		}
 		sessionName := sanitizeTmuxName(m.selectedProject)
 		hasSession := m.activeSessions[sessionName]
 		var label string
@@ -505,6 +520,8 @@ func (m model) handleMainMenu(selected string) (model, tea.Cmd) {
 	switch selected {
 	case "Connect to dev":
 		return m, execAndQuit("ssh", "dev")
+	case "Connect to mac":
+		return m, execAndQuit("ssh", "dev@mac.lan")
 	case "Browse Projects":
 		m.state = stateBrowseProjects
 		m.cursor = 0
@@ -598,6 +615,9 @@ func (m model) handleProjectActions(selected string) (model, tea.Cmd) {
 
 	switch selected {
 	case "Attach", "Open":
+		if !hasTmux() {
+			return m, execInDirAndReturn(m.selectedPath, "zsh")
+		}
 		if exists {
 			if isInsideTmux() {
 				return m, func() tea.Msg {
@@ -618,6 +638,9 @@ func (m model) handleProjectActions(selected string) (model, tea.Cmd) {
 		return m, execAndQuit("tmux", "new-session", "-s", sessionName, "-c", m.selectedPath)
 
 	case "Claude-logged":
+		if !hasTmux() {
+			return m, execInDirAndReturn(m.selectedPath, "zsh", "-lc", "claude-logged")
+		}
 		if exists {
 			// Add new window in existing session
 			exec.Command("tmux", "new-window", "-t", sessionName, "-c", m.selectedPath, "zsh", "-lc", "claude-logged").Run()
@@ -742,6 +765,9 @@ func (m model) handleSetupConfirm(selected string) (model, tea.Cmd) {
 
 	switch selected {
 	case "Start working here":
+		if !hasTmux() {
+			return m, execInDirAndReturn(m.selectedPath, "zsh")
+		}
 		if isInsideTmux() {
 			return m, func() tea.Msg {
 				exec.Command("tmux", "new-session", "-d", "-s", sessionName, "-c", m.selectedPath).Run()
@@ -751,6 +777,9 @@ func (m model) handleSetupConfirm(selected string) (model, tea.Cmd) {
 		}
 		return m, execAndQuit("tmux", "new-session", "-s", sessionName, "-c", m.selectedPath)
 	case "Launch claude-logged":
+		if !hasTmux() {
+			return m, execInDirAndReturn(m.selectedPath, "zsh", "-lc", "claude-logged")
+		}
 		if isInsideTmux() {
 			return m, func() tea.Msg {
 				exec.Command("tmux", "new-session", "-d", "-s", sessionName, "-c", m.selectedPath, "zsh", "-lc", "claude-logged").Run()
@@ -985,7 +1014,20 @@ func execInDirAndQuit(dir, name string, args ...string) tea.Cmd {
 	})
 }
 
+func execInDirAndReturn(dir, name string, args ...string) tea.Cmd {
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	return tea.ExecProcess(cmd, func(err error) tea.Msg {
+		return returnToMenuMsg{}
+	})
+}
+
 // Tmux helpers
+
+func hasTmux() bool {
+	_, err := exec.LookPath("tmux")
+	return err == nil
+}
 
 func sanitizeTmuxName(name string) string {
 	name = strings.ReplaceAll(name, ".", "-")
