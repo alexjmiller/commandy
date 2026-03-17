@@ -1,37 +1,63 @@
 # Commandy
 
-Terminal session launcher that provides quick access to common development tasks. Launches automatically when opening a new terminal.
+Terminal session launcher that provides quick access to common development tasks. Launches automatically when opening a new terminal. Built with Go using the Bubble Tea TUI framework.
 
 ## Overview
 
 Commandy displays a menu on terminal startup with host-specific options:
 
-**On `mac` (Mac Mini):**
-1. BlueStudio management
+**On `dev.lan` (Mac Mini):**
+1. Browse Projects
+2. Setup New Project
+3. Tools
+4. Connect to mac
+5. Sessions (tmux session manager)
+6. Skip
+
+**On `mac` (MacBook):**
+1. Connect to dev
 2. Browse Projects
 3. Setup New Project
 4. Tools
 5. Skip
 
-**On other machines (MacBookPro):**
-1. Fintrac management
-2. Browse Projects
-3. Setup New Project
-4. Tools
-5. Skip
+**On other machines:**
+1. Connect to dev
+2. Connect to mac
+3. Browse Projects
+4. Setup New Project
+5. Tools
+6. Skip
 
 ## Host Detection
 
-Uses `$(hostname)` to determine which machine-specific options to show:
-- `mac` - Shows BlueStudio option
-- Other - Shows Fintrac option
+Uses `os.Hostname()` to determine which machine-specific options to show:
+- `dev.lan` — Hides "Connect to dev", shows Sessions (tmux)
+- `mac` — Hides "Connect to mac"
+- Other — Shows both Connect options, no Sessions
+
+## Implementation
+
+- **Active codebase:** `main.go` (Go + Bubble Tea TUI)
+- **Legacy:** `commandy.sh` (shell script, no longer the primary version)
+- **Binary:** `commandy` (compiled Go binary, must be rebuilt with `go build` after changes)
+- **Assets:** `commandy.png`, `commandy2.png` (banner images rendered via chafa)
+
+## Tmux Integration
+
+On machines with tmux available:
+- **Browse Projects** opens projects in named tmux sessions
+- **Sessions** menu lists active tmux sessions with attach/kill options
+- **Claude-logged** launches in a tmux session and returns to commandy when the session exits
+
+Without tmux, commands fall back to direct shell execution.
 
 ## Tools Menu
 
 The Tools menu provides access to utility submenus:
 
 ### Quick Access
-- **SSH** - Connect to mac (from MacBookPro) or MacBookPro (from mac)
+- **SSH** - Connect to mac (from dev.lan) or dev (from mac)
 - **Open GitHub** - Opens github.com in browser
 - **Prisma Studio** - Launch Prisma Studio for any project with package.json
 - **PostgreSQL shell** - Connect to psql (defaults to Fintrac database)
@@ -76,28 +102,10 @@ When selecting a project for npm operations or Prisma Studio:
 - Lists all projects with `package.json` in ~/Projects
 - Also lists subdirectories with `package.json` (for monorepos like fintrac/backend, fintrac/frontend)
 
-## Service Management Menus
-
-### BlueStudio (mac only)
-1. Start (both services)
-2. Stop all services
-3. Restart all services
-4. Check status
-5. View API logs
-6. View Dashboard logs
-
-### Fintrac (MacBookPro only)
-1. Start (all services) - Docker + Backend + Frontend
-2. Stop all services
-3. Restart all services
-4. Check status
-5. View Backend logs
-6. View Frontend logs
-
 ## Browse Projects
 Lists all directories in `~/Projects` and allows:
-- Opening the folder (cd + new shell)
-- Launching claude-logged in that project
+- Opening the folder in a tmux session (or new shell without tmux)
+- Launching claude-logged in that project (returns to commandy on exit)
 
 ## Setup New Project
 - Creates new directory in `~/Projects`
@@ -106,7 +114,7 @@ Lists all directories in `~/Projects` and allows:
 
 ## Installation
 
-The script is set up globally via `.zshrc`:
+The binary is set up globally via `.zshrc`:
 
 ```bash
 # In ~/.zshrc
@@ -116,21 +124,34 @@ if [[ $- == *i* ]]; then
 fi
 ```
 
+### Building
+
+```bash
+go build -o commandy .
+```
+
+### Cross-compiling
+
+```bash
+GOOS=darwin GOARCH=amd64 go build -o commandy   # Intel Mac
+GOOS=linux GOARCH=amd64 go build -o commandy     # Linux x86_64
+```
+
 ## Dependencies
 
+### Go Modules
+- `github.com/charmbracelet/bubbletea` - TUI framework
+- `github.com/charmbracelet/bubbles` - TUI components (text input)
+- `github.com/charmbracelet/lipgloss` - TUI styling
+
 ### External Commands
-- `bluestudio` - BlueStudio service manager (on mac)
-- `~/Projects/fintrac/fintrac` - Fintrac service manager (on MacBookPro)
+- `tmux` - Terminal multiplexer (optional, enables Sessions and tmux-based project management)
+- `chafa` - Terminal image renderer (optional, for banner logo)
 - `claude-logged` - Claude wrapper with logging
 - `ngrok` - For tunnel/webhook testing
-- `docker` - For Docker cleanup and Fintrac services
+- `docker` - For Docker cleanup
 - `brew` - Homebrew package manager
 - `psql` - PostgreSQL client
-
-### Related Projects
-- **fintrac** (`~/Projects/fintrac/fintrac`) - Local dev service manager
-  - Manages: PostgreSQL, Redis (Docker), Backend (Express), Frontend (Vite)
-  - Commands: start, stop, restart, status, logs
 
 ## Ports Reference
 

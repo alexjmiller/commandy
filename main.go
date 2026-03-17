@@ -55,6 +55,7 @@ var (
 	projectsDir  = filepath.Join(os.Getenv("HOME"), "Projects")
 	hostname     string
 	execPath     string // Path to the commandy executable directory
+	execFullPath string // Full path to the commandy executable
 	cachedBanner string // Cached banner output to avoid re-running chafa on every render
 
 	// Port Authority config
@@ -199,6 +200,7 @@ func initialModel() model {
 	// Get the path to the executable to find the logo
 	if exe, err := os.Executable(); err == nil {
 		execPath = filepath.Dir(exe)
+		execFullPath = exe
 	}
 
 	ti := textinput.New()
@@ -402,10 +404,10 @@ func (m model) getMenuItems() []string {
 		if hostname != "dev.lan" {
 			items = append(items, "Connect to dev")
 		}
+		items = append(items, "Browse Projects", "Setup New Project", "Tools")
 		if hostname != "mac" {
 			items = append(items, "Connect to mac")
 		}
-		items = append(items, "Browse Projects", "Setup New Project", "Tools")
 		if hostname == "dev.lan" && hasTmux() {
 			items = append(items, "Sessions")
 		}
@@ -643,7 +645,7 @@ func (m model) handleProjectActions(selected string) (model, tea.Cmd) {
 		}
 		if exists {
 			// Add new window in existing session
-			exec.Command("tmux", "new-window", "-t", sessionName, "-c", m.selectedPath, "zsh", "-lc", "claude-logged").Run()
+			exec.Command("tmux", "new-window", "-t", sessionName, "-c", m.selectedPath, "zsh", "-lc", claudeLoggedCmd()).Run()
 			if isInsideTmux() {
 				return m, func() tea.Msg {
 					exec.Command("tmux", "switch-client", "-t", sessionName).Run()
@@ -655,12 +657,12 @@ func (m model) handleProjectActions(selected string) (model, tea.Cmd) {
 		// Create new session running claude-logged
 		if isInsideTmux() {
 			return m, func() tea.Msg {
-				exec.Command("tmux", "new-session", "-d", "-s", sessionName, "-c", m.selectedPath, "zsh", "-lc", "claude-logged").Run()
+				exec.Command("tmux", "new-session", "-d", "-s", sessionName, "-c", m.selectedPath, "zsh", "-lc", claudeLoggedCmd()).Run()
 				exec.Command("tmux", "switch-client", "-t", sessionName).Run()
 				return tea.Quit()
 			}
 		}
-		return m, execAndQuit("tmux", "new-session", "-s", sessionName, "-c", m.selectedPath, "zsh", "-lc", "claude-logged")
+		return m, execAndQuit("tmux", "new-session", "-s", sessionName, "-c", m.selectedPath, "zsh", "-lc", claudeLoggedCmd())
 
 	case "Kill session":
 		exec.Command("tmux", "kill-session", "-t", sessionName).Run()
@@ -782,12 +784,12 @@ func (m model) handleSetupConfirm(selected string) (model, tea.Cmd) {
 		}
 		if isInsideTmux() {
 			return m, func() tea.Msg {
-				exec.Command("tmux", "new-session", "-d", "-s", sessionName, "-c", m.selectedPath, "zsh", "-lc", "claude-logged").Run()
+				exec.Command("tmux", "new-session", "-d", "-s", sessionName, "-c", m.selectedPath, "zsh", "-lc", claudeLoggedCmd()).Run()
 				exec.Command("tmux", "switch-client", "-t", sessionName).Run()
 				return tea.Quit()
 			}
 		}
-		return m, execAndQuit("tmux", "new-session", "-s", sessionName, "-c", m.selectedPath, "zsh", "-lc", "claude-logged")
+		return m, execAndQuit("tmux", "new-session", "-s", sessionName, "-c", m.selectedPath, "zsh", "-lc", claudeLoggedCmd())
 	case "Back to menu":
 		m.state = stateMain
 		m.cursor = 0
@@ -1012,6 +1014,12 @@ func execInDirAndQuit(dir, name string, args ...string) tea.Cmd {
 	return tea.ExecProcess(cmd, func(err error) tea.Msg {
 		return tea.Quit()
 	})
+}
+
+// claudeLoggedCmd returns the shell command string for running claude-logged
+// followed by re-launching commandy when the session exits.
+func claudeLoggedCmd() string {
+	return "claude-logged; exec " + execFullPath
 }
 
 func execInDirAndReturn(dir, name string, args ...string) tea.Cmd {
