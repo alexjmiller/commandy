@@ -54,13 +54,13 @@ Without tmux, commands fall back to direct shell execution.
 
 ## Session Logging
 
-When launching Claude from commandy (via "Claude-logged" menu option), sessions are captured and streamed to the claude-logger API in real time:
+When launching Claude from commandy (via "Claude-logged" menu option), sessions are logged to the claude-logger API:
 
-1. `script -q $LOG claude` — captures the full terminal session (both user input and Claude output) to `~/.claude-logs/<project>_<timestamp>.log`
-2. `tail -f $LOG | curl -T -` — runs in the background, streaming the log to the API as it's written
-3. When Claude exits, the background stream is killed
+1. Claude Code runs normally and writes structured JSONL session logs to `~/.claude/projects/`
+2. When Claude exits, commandy finds the most recent JSONL file for the project and uploads it to the API via `curl`
+3. The API stores the JSONL and serves parsed conversations (user messages, tool calls, responses) to the frontend
 
-This replaces the old `claude-logged` node-pty wrapper. No additional dependencies are needed — `script`, `curl`, and `uuidgen` are standard system tools.
+No additional dependencies are needed — `curl` is the only external tool used for the upload.
 
 **Environment:**
 - `CLAUDE_LOGGER_API` — API URL (defaults to `http://zynx.lan:3000`)
@@ -163,8 +163,7 @@ GOOS=linux GOARCH=amd64 go build -o commandy     # Linux x86_64
 - `tmux` - Terminal multiplexer (optional, enables Sessions and tmux-based project management)
 - `chafa` - Terminal image renderer (optional, for banner logo)
 - `claude` - Claude Code CLI
-- `script` - Terminal session recorder (built-in on macOS/Linux)
-- `curl` - HTTP client for streaming logs to API (built-in)
+- `curl` - HTTP client for uploading session logs to API (built-in)
 - `ngrok` - For tunnel/webhook testing
 - `docker` - For Docker cleanup
 - `brew` - Homebrew package manager
