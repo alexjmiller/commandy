@@ -104,8 +104,9 @@ When selecting a project for npm operations or Prisma Studio:
 
 ## Browse Projects
 Lists all directories in `~/Projects` and allows:
+- Launching claude-logged in that project (returns to commandy on exit) — default first option
 - Opening the folder in a tmux session (or new shell without tmux)
-- Launching claude-logged in that project (returns to commandy on exit)
+- If an existing tmux session exists for the project, "Attach" becomes the first option above claude-logged
 
 ## Setup New Project
 - Creates new directory in `~/Projects`

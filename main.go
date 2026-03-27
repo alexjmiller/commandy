@@ -195,6 +195,10 @@ type model struct {
 
 func initialModel() model {
 	h, _ := os.Hostname()
+	// macOS often returns "dev.local" (mDNS) instead of "dev.lan" (DNS)
+	if h == "dev.local" || h == "dev" {
+		h = "dev.lan"
+	}
 	hostname = h
 
 	// Get the path to the executable to find the logo
@@ -419,19 +423,15 @@ func (m model) getMenuItems() []string {
 
 	case stateProjectActions:
 		if !hasTmux() {
-			return []string{"Open", "Claude-logged", "Back"}
+			return []string{"Claude-logged", "Open", "Back"}
 		}
 		sessionName := sanitizeTmuxName(m.selectedProject)
 		hasSession := m.activeSessions[sessionName]
-		var label string
+		var items []string
 		if hasSession {
-			label = "Attach"
+			items = []string{"Attach", "Claude-logged", "Kill session"}
 		} else {
-			label = "Open"
-		}
-		items := []string{label, "Claude-logged"}
-		if hasSession {
-			items = append(items, "Kill session")
+			items = []string{"Claude-logged", "Open"}
 		}
 		items = append(items, "Back")
 		return items
@@ -641,7 +641,7 @@ func (m model) handleProjectActions(selected string) (model, tea.Cmd) {
 
 	case "Claude-logged":
 		if !hasTmux() {
-			return m, execInDirAndReturn(m.selectedPath, "zsh", "-lc", "claude-logged")
+			return m, execInDirAndReturn(m.selectedPath, "zsh", "-lc", claudeSessionCmd())
 		}
 		if exists {
 			// Add new window in existing session
@@ -780,7 +780,7 @@ func (m model) handleSetupConfirm(selected string) (model, tea.Cmd) {
 		return m, execAndQuit("tmux", "new-session", "-s", sessionName, "-c", m.selectedPath)
 	case "Launch claude-logged":
 		if !hasTmux() {
-			return m, execInDirAndReturn(m.selectedPath, "zsh", "-lc", "claude-logged")
+			return m, execInDirAndReturn(m.selectedPath, "zsh", "-lc", claudeSessionCmd())
 		}
 		if isInsideTmux() {
 			return m, func() tea.Msg {
@@ -1016,10 +1016,32 @@ func execInDirAndQuit(dir, name string, args ...string) tea.Cmd {
 	})
 }
 
-// claudeLoggedCmd returns the shell command string for running claude-logged
-// followed by re-launching commandy when the session exits.
+func claudeLoggerAPI() string {
+	api := os.Getenv("CLAUDE_LOGGER_API")
+	if api == "" {
+		api = "http://zynx.lan:3000"
+	}
+	return api
+}
+
+// claudeSessionCmd returns a shell command that runs claude inside `script`
+// to capture the full session to a log file. A background `tail -f | curl`
+// streams the log to the claude-logger API in real time as it's written.
+func claudeSessionCmd() string {
+	return fmt.Sprintf(`SESSION_ID=$(uuidgen)
+LOG="$HOME/.claude-logs/$(basename "$PWD")_$(date +%%Y%%m%%d_%%H%%M%%S).log"
+mkdir -p "$HOME/.claude-logs"
+touch "$LOG"
+tail -f "$LOG" | curl -sfN -T - -H "X-Project: $PWD" "%s/api/sessions/$SESSION_ID/stream" > /dev/null 2>&1 &
+CURL_PID=$!
+script -q "$LOG" claude
+sleep 1
+kill $CURL_PID 2>/dev/null || true`, claudeLoggerAPI())
+}
+
+// claudeLoggedCmd returns the session command followed by re-launching commandy.
 func claudeLoggedCmd() string {
-	return "claude-logged; exec " + execFullPath
+	return claudeSessionCmd() + "\nexec " + execFullPath
 }
 
 func execInDirAndReturn(dir, name string, args ...string) tea.Cmd {
