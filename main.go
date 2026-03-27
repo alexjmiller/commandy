@@ -358,6 +358,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.cursor = 0
 		m.message = ""
 		m.messageType = ""
+		m.activeSessions = tmuxListSessions()
 		return m, nil
 
 	case cmdFinishedMsg:
@@ -415,7 +416,7 @@ func (m model) getMenuItems() []string {
 		if hostname == "dev.lan" && hasTmux() {
 			items = append(items, "Sessions")
 		}
-		return append(items, "Skip")
+		return append(items, "Exit")
 
 	case stateBrowseProjects:
 		items := m.projects
@@ -541,7 +542,7 @@ func (m model) handleMainMenu(selected string) (model, tea.Cmd) {
 		m.state = stateSessions
 		m.cursor = 0
 		m.loadSessions()
-	case "Skip":
+	case "Exit":
 		fmt.Println("\n" + successStyle.Render("Have a great session!"))
 		return m, tea.Quit
 	}
