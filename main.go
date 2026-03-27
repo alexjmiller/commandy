@@ -1024,19 +1024,16 @@ func claudeLoggerAPI() string {
 	return api
 }
 
-// claudeSessionCmd returns a shell command that runs claude inside `script`
-// to capture the full session to a log file. A background `tail -f | curl`
-// streams the log to the claude-logger API in real time as it's written.
+// claudeSessionCmd runs claude, then uploads the JSONL session log
+// that Claude Code writes to ~/.claude/projects/ to the logger API.
 func claudeSessionCmd() string {
-	return fmt.Sprintf(`SESSION_ID=$(uuidgen)
-LOG="$HOME/.claude-logs/$(basename "$PWD")_$(date +%%Y%%m%%d_%%H%%M%%S).log"
-mkdir -p "$HOME/.claude-logs"
-touch "$LOG"
-tail -f "$LOG" | curl -sfN -T - -H "X-Project: $PWD" "%s/api/sessions/$SESSION_ID/stream" > /dev/null 2>&1 &
-CURL_PID=$!
-script -q "$LOG" claude
-sleep 1
-kill $CURL_PID 2>/dev/null || true`, claudeLoggerAPI())
+	return fmt.Sprintf(`claude
+CLAUDE_DIR="$HOME/.claude/projects/$(echo "$PWD" | tr '/' '-')"
+LATEST=$(ls -t "$CLAUDE_DIR"/*.jsonl 2>/dev/null | head -1)
+if [ -n "$LATEST" ]; then
+  SID=$(basename "$LATEST" .jsonl)
+  curl -sf -X POST "%s/api/sessions/$SID" -H "X-Project: $PWD" --data-binary "@$LATEST" > /dev/null 2>&1 || true
+fi`, claudeLoggerAPI())
 }
 
 // claudeLoggedCmd returns the session command followed by re-launching commandy.

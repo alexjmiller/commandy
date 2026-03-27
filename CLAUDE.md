@@ -32,7 +32,7 @@ Commandy displays a menu on terminal startup with host-specific options:
 ## Host Detection
 
 Uses `os.Hostname()` to determine which machine-specific options to show:
-- `dev.lan` — Hides "Connect to dev", shows Sessions (tmux)
+- `dev.lan` (also matches `dev.local`, `dev`) — Hides "Connect to dev", shows Sessions (tmux)
 - `mac` — Hides "Connect to mac"
 - Other — Shows both Connect options, no Sessions
 
@@ -46,11 +46,24 @@ Uses `os.Hostname()` to determine which machine-specific options to show:
 ## Tmux Integration
 
 On machines with tmux available:
-- **Browse Projects** opens projects in named tmux sessions
+- **Browse Projects** opens projects in named tmux sessions (`tmux new -s <project-name>`)
 - **Sessions** menu lists active tmux sessions with attach/kill options
-- **Claude-logged** launches in a tmux session and returns to commandy when the session exits
+- **Claude** launches in a tmux session and returns to commandy when the session exits
 
 Without tmux, commands fall back to direct shell execution.
+
+## Session Logging
+
+When launching Claude from commandy (via "Claude-logged" menu option), sessions are captured and streamed to the claude-logger API in real time:
+
+1. `script -q $LOG claude` — captures the full terminal session (both user input and Claude output) to `~/.claude-logs/<project>_<timestamp>.log`
+2. `tail -f $LOG | curl -T -` — runs in the background, streaming the log to the API as it's written
+3. When Claude exits, the background stream is killed
+
+This replaces the old `claude-logged` node-pty wrapper. No additional dependencies are needed — `script`, `curl`, and `uuidgen` are standard system tools.
+
+**Environment:**
+- `CLAUDE_LOGGER_API` — API URL (defaults to `http://zynx.lan:3000`)
 
 ## Tools Menu
 
@@ -104,14 +117,14 @@ When selecting a project for npm operations or Prisma Studio:
 
 ## Browse Projects
 Lists all directories in `~/Projects` and allows:
-- Launching claude-logged in that project (returns to commandy on exit) — default first option
+- Launching Claude in that project (returns to commandy on exit) — default first option
 - Opening the folder in a tmux session (or new shell without tmux)
-- If an existing tmux session exists for the project, "Attach" becomes the first option above claude-logged
+- If an existing tmux session exists for the project, "Attach" becomes the first option above Claude
 
 ## Setup New Project
 - Creates new directory in `~/Projects`
 - Initializes git repository
-- Options to start working or launch claude-logged
+- Options to start working or launch Claude
 
 ## Installation
 
@@ -119,6 +132,7 @@ The binary is set up globally via `.zshrc`:
 
 ```bash
 # In ~/.zshrc
+export CLAUDE_LOGGER_API="http://zynx.lan:3000"
 export PATH="$HOME/Projects/commandy:$PATH"
 if [[ $- == *i* ]]; then
     commandy
@@ -148,7 +162,9 @@ GOOS=linux GOARCH=amd64 go build -o commandy     # Linux x86_64
 ### External Commands
 - `tmux` - Terminal multiplexer (optional, enables Sessions and tmux-based project management)
 - `chafa` - Terminal image renderer (optional, for banner logo)
-- `claude-logged` - Claude wrapper with logging
+- `claude` - Claude Code CLI
+- `script` - Terminal session recorder (built-in on macOS/Linux)
+- `curl` - HTTP client for streaming logs to API (built-in)
 - `ngrok` - For tunnel/webhook testing
 - `docker` - For Docker cleanup
 - `brew` - Homebrew package manager
