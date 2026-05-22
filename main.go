@@ -646,24 +646,18 @@ func (m model) handleProjectActions(selected string) (model, tea.Cmd) {
 		}
 		if exists {
 			// Add new window in existing session
-			exec.Command("tmux", "new-window", "-t", sessionName, "-c", m.selectedPath, "zsh", "-lc", claudeLoggedCmd()).Run()
+			exec.Command("tmux", "new-window", "-t", sessionName, "-c", m.selectedPath, "zsh", "-lc", claudeLoggedCmd(sessionName)).Run()
 			if isInsideTmux() {
-				return m, func() tea.Msg {
-					exec.Command("tmux", "switch-client", "-t", sessionName).Run()
-					return tea.Quit()
-				}
+				return m, switchAndWaitForSession(sessionName)
 			}
 			return m, execAndQuit("tmux", "attach", "-t", sessionName)
 		}
 		// Create new session running claude-logged
 		if isInsideTmux() {
-			return m, func() tea.Msg {
-				exec.Command("tmux", "new-session", "-d", "-s", sessionName, "-c", m.selectedPath, "zsh", "-lc", claudeLoggedCmd()).Run()
-				exec.Command("tmux", "switch-client", "-t", sessionName).Run()
-				return tea.Quit()
-			}
+			exec.Command("tmux", "new-session", "-d", "-s", sessionName, "-c", m.selectedPath, "zsh", "-lc", claudeLoggedCmd(sessionName)).Run()
+			return m, switchAndWaitForSession(sessionName)
 		}
-		return m, execAndQuit("tmux", "new-session", "-s", sessionName, "-c", m.selectedPath, "zsh", "-lc", claudeLoggedCmd())
+		return m, execAndQuit("tmux", "new-session", "-s", sessionName, "-c", m.selectedPath, "zsh", "-lc", claudeLoggedCmd(sessionName))
 
 	case "Kill session":
 		exec.Command("tmux", "kill-session", "-t", sessionName).Run()
@@ -784,13 +778,10 @@ func (m model) handleSetupConfirm(selected string) (model, tea.Cmd) {
 			return m, execInDirAndReturn(m.selectedPath, "zsh", "-lc", claudeSessionCmd())
 		}
 		if isInsideTmux() {
-			return m, func() tea.Msg {
-				exec.Command("tmux", "new-session", "-d", "-s", sessionName, "-c", m.selectedPath, "zsh", "-lc", claudeLoggedCmd()).Run()
-				exec.Command("tmux", "switch-client", "-t", sessionName).Run()
-				return tea.Quit()
-			}
+			exec.Command("tmux", "new-session", "-d", "-s", sessionName, "-c", m.selectedPath, "zsh", "-lc", claudeLoggedCmd(sessionName)).Run()
+			return m, switchAndWaitForSession(sessionName)
 		}
-		return m, execAndQuit("tmux", "new-session", "-s", sessionName, "-c", m.selectedPath, "zsh", "-lc", claudeLoggedCmd())
+		return m, execAndQuit("tmux", "new-session", "-s", sessionName, "-c", m.selectedPath, "zsh", "-lc", claudeLoggedCmd(sessionName))
 	case "Back to menu":
 		m.state = stateMain
 		m.cursor = 0
@@ -1037,14 +1028,27 @@ if [ -n "$LATEST" ]; then
 fi`, claudeLoggerAPI())
 }
 
-// claudeLoggedCmd returns the session command followed by re-launching commandy.
-func claudeLoggedCmd() string {
-	return claudeSessionCmd() + "\nexec " + execFullPath
+// claudeLoggedCmd returns the session command with a tmux wait-for signal at the end.
+// The signal allows the calling commandy instance to know when the session finishes.
+func claudeLoggedCmd(sessionName string) string {
+	return claudeSessionCmd() + fmt.Sprintf("\ntmux wait-for -S 'done-%s'", sessionName)
 }
 
 func execInDirAndReturn(dir, name string, args ...string) tea.Cmd {
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
+	return tea.ExecProcess(cmd, func(err error) tea.Msg {
+		return returnToMenuMsg{}
+	})
+}
+
+// switchAndWaitForSession switches to a tmux session and blocks until it signals
+// completion. Both commands run inside tea.ExecProcess so the TUI is properly
+// suspended before the switch and resumed after the session ends.
+func switchAndWaitForSession(sessionName string) tea.Cmd {
+	cmd := exec.Command("sh", "-c", fmt.Sprintf(
+		"tmux switch-client -t '%s' && tmux wait-for 'done-%s'",
+		sessionName, sessionName))
 	return tea.ExecProcess(cmd, func(err error) tea.Msg {
 		return returnToMenuMsg{}
 	})

@@ -48,7 +48,7 @@ Uses `os.Hostname()` to determine which machine-specific options to show:
 On machines with tmux available:
 - **Browse Projects** opens projects in named tmux sessions (`tmux new -s <project-name>`)
 - **Sessions** menu lists active tmux sessions with attach/kill options
-- **Claude** launches in a tmux session and returns to commandy when the session exits
+- **Claude-logged** launches Claude in a separate tmux session. Commandy stays alive in the background using `tmux wait-for` to block until Claude finishes. When the Claude session ends (signalling via `tmux wait-for -S done-<session>`), the tmux session auto-closes and commandy returns to the main menu — no stale sessions left behind.
 
 Without tmux, commands fall back to direct shell execution.
 
@@ -61,6 +61,8 @@ When launching Claude from commandy (via "Claude-logged" menu option), sessions 
 3. The API stores the JSONL and serves parsed conversations (user messages, tool calls, responses) to the frontend
 
 No additional dependencies are needed — `curl` is the only external tool used for the upload.
+
+**Limitation:** Logging is post-session only — the JSONL is uploaded after claude exits, not in real time. A future improvement could use a background process to watch the JSONL file and periodically upload new entries during the session, enabling live session viewing in the frontend.
 
 **Environment:**
 - `CLAUDE_LOGGER_API` — API URL (defaults to `http://zynx.lan:3000`)
