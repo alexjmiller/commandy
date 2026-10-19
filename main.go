@@ -557,7 +557,7 @@ func (m model) getMenuItems() []string {
 				items = []string{"Claude-logged", "Open"}
 			}
 		}
-		items = append(items, "Git", "Back")
+		items = append(items, "Open in VS Code", "Git", "Back")
 		return items
 
 	case stateGitMenu:
@@ -828,6 +828,11 @@ func (m model) handleProjectActions(selected string) (model, tea.Cmd) {
 		m.messageType = "success"
 		return m.goBack(), nil
 
+	case "Open in VS Code":
+		m.message = "Opening in VS Code..."
+		m.messageType = "info"
+		return m, openInVSCode(m.selectedProject, m.selectedPath)
+
 	case "Git":
 		m.git = loadGitInfo(m.selectedPath)
 		m.state = stateGitMenu
@@ -838,6 +843,98 @@ func (m model) handleProjectActions(selected string) (model, tea.Cmd) {
 		return m.goBack(), nil
 	}
 	return m, nil
+}
+
+// --- Open in VS Code ---
+//
+// When commandy runs on dev.lan over SSH, VS Code should open on the Mac the
+// user is sitting at, via dev.lan's SMB "Projects" share (mounted by macOS at
+// /Volumes/Projects). When commandy runs on that Mac itself, open locally.
+
+const vsCodeBin = "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"
+
+// sshClientIP returns the address of the machine the user is connecting from,
+// or "" when commandy is running locally (console or no SSH).
+func sshClientIP() string {
+	if conn := os.Getenv("SSH_CONNECTION"); conn != "" {
+		return strings.Fields(conn)[0]
+	}
+	// Inside tmux the environment may predate this connection: look up the
+	// attached client's tty in `who` instead.
+	if isInsideTmux() {
+		out, err := exec.Command("tmux", "display-message", "-p", "#{client_tty}").Output()
+		if err == nil {
+			tty := strings.TrimPrefix(strings.TrimSpace(string(out)), "/dev/")
+			who, _ := exec.Command("who").Output()
+			for _, line := range strings.Split(string(who), "\n") {
+				f := strings.Fields(line)
+				if len(f) >= 2 && f[1] == tty {
+					if i := strings.LastIndex(line, "("); i >= 0 && strings.HasSuffix(line, ")") {
+						return line[i+1 : len(line)-1]
+					}
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// clientMacHost maps a connecting IP to an SSH host alias from ~/.ssh/config
+func clientMacHost(ip string) string {
+	switch ip {
+	case "172.16.1.132":
+		return "devbook"
+	case "172.16.1.113":
+		return "mac"
+	case "172.16.1.190":
+		return "mac.lan"
+	}
+	return ip
+}
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+func openInVSCode(project, path string) tea.Cmd {
+	return func() tea.Msg {
+		ip := sshClientIP()
+		if ip == "" {
+			// Local: open the folder directly
+			var cmd *exec.Cmd
+			if _, err := os.Stat(vsCodeBin); err == nil {
+				cmd = exec.Command(vsCodeBin, path)
+			} else if codePath, err := exec.LookPath("code"); err == nil {
+				cmd = exec.Command(codePath, path)
+			} else {
+				cmd = exec.Command("open", "-a", "Visual Studio Code", path)
+			}
+			if out, err := cmd.CombinedOutput(); err != nil {
+				return cmdFinishedMsg{err: err, output: strings.TrimSpace(string(out))}
+			}
+			return cmdFinishedMsg{output: fmt.Sprintf("Opened %s in VS Code", project)}
+		}
+
+		host := clientMacHost(ip)
+		share := fmt.Sprintf("smb://%s/Projects", hostname)
+		mounted := "/Volumes/Projects/" + project
+		script := fmt.Sprintf(`p=%s
+if [ ! -d "$p" ]; then
+  open %s
+  for i in $(seq 1 20); do [ -d "$p" ] && break; sleep 0.5; done
+fi
+[ -d "$p" ] || { echo "Share not mounted on this Mac: $p (open %s in Finder first)"; exit 1; }
+if [ -x %s ]; then %s "$p"; else open -a "Visual Studio Code" "$p"; fi`,
+			shellQuote(mounted), shellQuote(share), share, shellQuote(vsCodeBin), shellQuote(vsCodeBin))
+
+		cmd := exec.Command("ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
+			"-o", "ControlMaster=auto", "-o", "ControlPath="+filepath.Join(os.Getenv("HOME"), ".ssh/cm/%r@%h:%p"),
+			"-o", "ControlPersist=10m", host, script)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return cmdFinishedMsg{err: fmt.Errorf("could not open on %s", host), output: strings.TrimSpace(string(out))}
+		}
+		return cmdFinishedMsg{output: fmt.Sprintf("Opened %s in VS Code on %s (%s)", project, host, mounted)}
+	}
 }
 
 // gitInfo summarises a project's repository for the Git submenu
