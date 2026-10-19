@@ -1981,7 +1981,8 @@ func renderCopyPasteHelp() string {
 	s.WriteString("\n")
 
 	section("Terminal.app native (bypasses tmux)")
-	row("Option+drag, Cmd+C", "select visible text with Terminal itself")
+	row("Fn+drag, Cmd+C", "select visible text with Terminal itself (Option/Shift do not bypass tmux)")
+	row("View > Allow Mouse Reporting", "untick to make plain drag + Cmd+C native; tick again for tmux")
 	s.WriteString("\n")
 
 	section("Sessions")
