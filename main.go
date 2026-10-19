@@ -6,7 +6,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -35,6 +37,8 @@ const (
 	stateInputProjectName
 	stateInputDbUrl
 	stateRunningCommand
+	stateHelp
+	stateGitMenu
 	stateQuit
 )
 
@@ -182,6 +186,7 @@ type model struct {
 	selectedProject string
 	selectedPath    string
 	projectAction   projectAction
+	git             gitInfo // repo summary for the Git submenu
 	activeSessions  map[string]bool
 	sessionNames    []string
 	selectedSession string
@@ -189,9 +194,17 @@ type model struct {
 	inputPrompt     string
 	message         string
 	messageType     string // "success", "error", "info"
-	width  int
-	height int
+	numBuf          string // digits typed so far for multi-digit menu selection
+	numSeq          int    // sequence number to ignore stale numTimeoutMsgs
+	width           int
+	height          int
 }
+
+// numTimeoutMsg fires when the user pauses after typing a digit
+type numTimeoutMsg struct{ seq int }
+
+// numEntryTimeout is how long to wait for a second digit before selecting
+const numEntryTimeout = 700 * time.Millisecond
 
 func initialModel() model {
 	h, _ := os.Hostname()
@@ -276,7 +289,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.message = ""
 		m.messageType = ""
 
-		switch msg.String() {
+		key := msg.String()
+		if isAllDigits(key) {
+			// Fast typing or a paste can deliver several digits in one key
+			// message ("13"); feed them through one at a time.
+			var cmd tea.Cmd
+			cur := m
+			for _, r := range key {
+				var next tea.Model
+				next, cmd = cur.handleDigit(string(r))
+				cur = next.(model)
+			}
+			return cur, cmd
+		}
+		// Any non-digit key abandons a pending multi-digit entry
+		// (enter still selects the item the digits already moved the cursor to)
+		m.numBuf = ""
+		m.numSeq++
+
+		switch key {
 		case "ctrl+c", "q":
 			if m.state == stateMain {
 				return m, tea.Quit
@@ -343,14 +374,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "enter", " ":
 			return m.handleSelection()
+		}
 
-		case "1", "2", "3", "4", "5", "6", "7", "8", "9":
-			idx := int(msg.String()[0] - '1')
-			items := m.getMenuItems()
-			if idx < len(items) {
-				m.cursor = idx
-				return m.handleSelection()
-			}
+	case numTimeoutMsg:
+		// Only act if no further digit/key arrived since the timer was started
+		if msg.seq == m.numSeq && m.numBuf != "" {
+			m.numBuf = ""
+			m.numSeq++
+			return m.handleSelection()
 		}
 
 	case returnToMenuMsg:
@@ -369,19 +400,111 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.message = msg.output
 			m.messageType = "success"
 		}
+		if m.state == stateGitMenu {
+			m.git = loadGitInfo(m.selectedPath)
+			if m.cursor >= len(m.getMenuItems()) {
+				m.cursor = 0
+			}
+		}
 	}
 
 	return m, nil
 }
 
+// The trailing "Back" item is pinned to a fixed number so it sits on the same
+// key in every menu: 9 in short menus, 99 in long ones (10+ items). The main
+// menu has no Back; Exit keeps its natural number so a repeated 9 can't exit.
+func pinnedBack(items []string) (index, number int) {
+	if len(items) == 0 || len(items) >= 99 {
+		return -1, 0
+	}
+	last := len(items) - 1
+	switch items[last] {
+	case "Back", "Back to menu":
+	default:
+		return -1, 0
+	}
+	if len(items) < 10 {
+		return last, 9
+	}
+	return last, 99
+}
+
+// menuNumber is the number shown for (and typed to pick) item i
+func menuNumber(items []string, i int) int {
+	if idx, n := pinnedBack(items); i == idx {
+		return n
+	}
+	return i + 1
+}
+
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// handleDigit accumulates typed digits so menus with 10+ items can be
+// selected by number. If another digit could still form a valid item number,
+// it moves the cursor and waits briefly for it; otherwise it selects at once.
+func (m model) handleDigit(key string) (tea.Model, tea.Cmd) {
+	items := m.getMenuItems()
+	buf := m.numBuf + key
+	n := 0
+	for _, c := range buf {
+		n = n*10 + int(c-'0')
+	}
+	m.numSeq++
+
+	pinned, pinNum := pinnedBack(items)
+	if pinned >= 0 && n == pinNum {
+		m.numBuf = ""
+		m.cursor = pinned
+		return m.handleSelection()
+	}
+	// With Back pinned, the highest regular number is len(items)-1
+	maxN := len(items)
+	if pinned >= 0 {
+		maxN = len(items) - 1
+	}
+
+	if n < 1 || n > maxN {
+		// Out of range: discard the entry
+		m.numBuf = ""
+		return m, nil
+	}
+
+	m.cursor = n - 1
+	// A further digit could still be valid: wait for it ("9" may become "99")
+	if n*10 <= maxN || (pinNum == 99 && n == 9) {
+		// A further digit could still be valid: wait for it
+		m.numBuf = buf
+		seq := m.numSeq
+		return m, tea.Tick(numEntryTimeout, func(time.Time) tea.Msg {
+			return numTimeoutMsg{seq: seq}
+		})
+	}
+
+	m.numBuf = ""
+	return m.handleSelection()
+}
+
 func (m model) goBack() model {
 	switch m.state {
-	case stateBrowseProjects, stateSetupProject, stateTools, stateSessions:
+	case stateBrowseProjects, stateSetupProject, stateTools, stateSessions, stateHelp:
 		m.state = stateMain
 	case stateSessionActions:
 		m.state = stateSessions
 	case stateProjectActions:
 		m.state = stateBrowseProjects
+	case stateGitMenu:
+		m.state = stateProjectActions
 	case stateSetupProjectConfirm:
 		m.state = stateSetupProject
 	case stateQuickAccess, stateDevTools, statePortAuthority, stateSystemMaintenance, stateNpmUtilities:
@@ -416,26 +539,36 @@ func (m model) getMenuItems() []string {
 		if hostname == "dev.lan" && hasTmux() {
 			items = append(items, "Sessions")
 		}
-		return append(items, "Exit")
+		return append(items, "Help", "Exit")
 
 	case stateBrowseProjects:
 		items := m.projects
 		return append(items, "Back to menu")
 
 	case stateProjectActions:
-		if !hasTmux() {
-			return []string{"Claude-logged", "Open", "Back"}
-		}
-		sessionName := sanitizeTmuxName(m.selectedProject)
-		hasSession := m.activeSessions[sessionName]
 		var items []string
-		if hasSession {
-			items = []string{"Attach", "Claude-logged", "Kill session"}
-		} else {
+		if !hasTmux() {
 			items = []string{"Claude-logged", "Open"}
+		} else {
+			sessionName := sanitizeTmuxName(m.selectedProject)
+			if m.activeSessions[sessionName] {
+				items = []string{"Attach", "Claude-logged", "New shell window", "Kill session"}
+			} else {
+				items = []string{"Claude-logged", "Open"}
+			}
 		}
-		items = append(items, "Back")
+		items = append(items, "Git", "Back")
 		return items
+
+	case stateGitMenu:
+		if !m.git.isRepo {
+			return []string{"Git init", "Back"}
+		}
+		items := []string{"Git status", "Git log"}
+		if m.git.remote != "" {
+			items = append(items, "Git pull", "Git push")
+		}
+		return append(items, "Back")
 
 	case stateSessions:
 		items := m.sessionNames
@@ -443,6 +576,9 @@ func (m model) getMenuItems() []string {
 			return []string{"Back"}
 		}
 		return append(items, "Back")
+
+	case stateHelp:
+		return []string{"Back"}
 
 	case stateSessionActions:
 		return []string{"Resume", "Kill session", "Back"}
@@ -496,6 +632,10 @@ func (m model) handleSelection() (model, tea.Cmd) {
 		return m.handleProjectActions(selected)
 	case stateSessions:
 		return m.handleSessions(selected)
+	case stateHelp:
+		return m.goBack(), nil
+	case stateGitMenu:
+		return m.handleGitMenu(selected)
 	case stateSessionActions:
 		return m.handleSessionActions(selected)
 	case stateSetupProjectConfirm:
@@ -542,6 +682,9 @@ func (m model) handleMainMenu(selected string) (model, tea.Cmd) {
 		m.state = stateSessions
 		m.cursor = 0
 		m.loadSessions()
+	case "Help":
+		m.state = stateHelp
+		m.cursor = 0
 	case "Exit":
 		fmt.Println("\n" + successStyle.Render("Have a great session!"))
 		return m, tea.Quit
@@ -640,6 +783,25 @@ func (m model) handleProjectActions(selected string) (model, tea.Cmd) {
 		}
 		return m, execAndQuit("tmux", "new-session", "-s", sessionName, "-c", m.selectedPath)
 
+	case "New shell window":
+		// A session already exists (often running Claude): open a plain shell
+		// in a new window of that session, in the project folder, and go there.
+		if !hasTmux() || !exists {
+			return m.handleProjectActions("Open")
+		}
+		if err := exec.Command("tmux", "new-window", "-t", sessionName, "-c", m.selectedPath).Run(); err != nil {
+			m.message = fmt.Sprintf("Could not open window in '%s': %v", sessionName, err)
+			m.messageType = "error"
+			return m, nil
+		}
+		if isInsideTmux() {
+			return m, func() tea.Msg {
+				exec.Command("tmux", "switch-client", "-t", sessionName).Run()
+				return tea.Quit()
+			}
+		}
+		return m, execAndQuit("tmux", "attach", "-t", sessionName)
+
 	case "Claude-logged":
 		if !hasTmux() {
 			return m, execInDirAndReturn(m.selectedPath, "zsh", "-lc", claudeSessionCmd())
@@ -666,10 +828,212 @@ func (m model) handleProjectActions(selected string) (model, tea.Cmd) {
 		m.messageType = "success"
 		return m.goBack(), nil
 
+	case "Git":
+		m.git = loadGitInfo(m.selectedPath)
+		m.state = stateGitMenu
+		m.cursor = 0
+		return m, nil
+
 	case "Back":
 		return m.goBack(), nil
 	}
 	return m, nil
+}
+
+// gitInfo summarises a project's repository for the Git submenu
+type gitInfo struct {
+	isRepo      bool
+	branch      string
+	lastRel     string // e.g. "3 days ago"
+	lastAbs     string // e.g. "2026-10-16 14:02"
+	lastSubject string
+	dirty       int    // changed/untracked files
+	remote      string // first remote's URL, "" if none
+	hasUpstream bool
+	ahead       int
+	behind      int
+}
+
+func gitOut(path string, args ...string) (string, error) {
+	out, err := exec.Command("git", append([]string{"-C", path}, args...)...).Output()
+	return strings.TrimSpace(string(out)), err
+}
+
+func loadGitInfo(path string) gitInfo {
+	var g gitInfo
+	if !isGitRepo(path) {
+		return g
+	}
+	g.isRepo = true
+
+	if b, err := gitOut(path, "symbolic-ref", "--short", "HEAD"); err == nil {
+		g.branch = b
+	} else if b, err := gitOut(path, "rev-parse", "--short", "HEAD"); err == nil {
+		g.branch = "detached @ " + b
+	}
+
+	if out, err := gitOut(path, "log", "-1", "--format=%cr%n%cd%n%s", "--date=format:%Y-%m-%d %H:%M"); err == nil {
+		parts := strings.SplitN(out, "\n", 3)
+		if len(parts) == 3 {
+			g.lastRel, g.lastAbs, g.lastSubject = parts[0], parts[1], parts[2]
+		}
+	}
+
+	if out, err := gitOut(path, "status", "--porcelain"); err == nil && out != "" {
+		g.dirty = len(strings.Split(out, "\n"))
+	}
+
+	if remotes, err := gitOut(path, "remote"); err == nil && remotes != "" {
+		name := strings.Split(remotes, "\n")[0]
+		if url, err := gitOut(path, "remote", "get-url", name); err == nil {
+			g.remote = url
+		} else {
+			g.remote = name
+		}
+	}
+
+	if out, err := gitOut(path, "rev-list", "--left-right", "--count", "@{u}...HEAD"); err == nil {
+		g.hasUpstream = true
+		fmt.Sscanf(out, "%d %d", &g.behind, &g.ahead)
+	}
+	return g
+}
+
+// renderGitInfo is the summary block shown above the Git submenu
+func (m model) renderGitInfo() string {
+	g := m.git
+	label := func(s string) string { return dimStyle.Render(fmt.Sprintf("  %-12s", s)) }
+	var s strings.Builder
+
+	if !g.isRepo {
+		s.WriteString(subtitleStyle.Render("  Not a git repository") + "\n")
+		s.WriteString(dimStyle.Render("  Git init will create one in ") + m.selectedPath + "\n")
+		return s.String()
+	}
+
+	if g.lastAbs == "" {
+		s.WriteString(label("Last commit") + subtitleStyle.Render("none yet") + "\n")
+	} else {
+		s.WriteString(label("Last commit") + selectedStyle.Render(g.lastRel) + dimStyle.Render("  ("+g.lastAbs+")") + "\n")
+		s.WriteString(label("") + normalStyle.Render(g.lastSubject) + "\n")
+	}
+
+	branch := g.branch
+	if g.hasUpstream {
+		switch {
+		case g.ahead > 0 && g.behind > 0:
+			branch += fmt.Sprintf("  ↑%d ↓%d", g.ahead, g.behind)
+		case g.ahead > 0:
+			branch += fmt.Sprintf("  ↑%d to push", g.ahead)
+		case g.behind > 0:
+			branch += fmt.Sprintf("  ↓%d to pull", g.behind)
+		default:
+			branch += "  in sync"
+		}
+	} else if g.remote != "" {
+		branch += "  (no upstream)"
+	}
+	s.WriteString(label("Branch") + normalStyle.Render(branch) + "\n")
+
+	if g.dirty > 0 {
+		s.WriteString(label("Changes") + errorStyle.Render(fmt.Sprintf("%d uncommitted file(s)", g.dirty)) + "\n")
+	} else {
+		s.WriteString(label("Changes") + successStyle.Render("clean") + "\n")
+	}
+
+	if g.remote != "" {
+		s.WriteString(label("Remote") + dimStyle.Render(g.remote) + "\n")
+	} else {
+		s.WriteString(label("Remote") + subtitleStyle.Render("none (add one before push/pull)") + "\n")
+	}
+	return s.String()
+}
+
+func (m model) handleGitMenu(selected string) (model, tea.Cmd) {
+	path := m.selectedPath
+	switch selected {
+	case "Git init":
+		out, err := exec.Command("git", "-C", path, "init").CombinedOutput()
+		if err != nil {
+			m.message = fmt.Sprintf("git init failed: %v\n%s", err, strings.TrimSpace(string(out)))
+			m.messageType = "error"
+		} else {
+			m.message = strings.TrimSpace(string(out))
+			m.messageType = "success"
+		}
+		m.git = loadGitInfo(path)
+		m.cursor = 0
+		return m, nil
+
+	case "Git status":
+		m.message = "Checking..."
+		m.messageType = "info"
+		return m, gitCommandInProject(path, "status", "--short", "--branch")
+
+	case "Git log":
+		m.message = "Loading..."
+		m.messageType = "info"
+		return m, gitCommandInProject(path, "log", "-10", "--date=relative", "--format=%h  %ad  %s")
+
+	case "Git pull":
+		m.message = "Pulling..."
+		m.messageType = "info"
+		return m, gitPullProject(path)
+
+	case "Git push":
+		m.message = "Pushing..."
+		m.messageType = "info"
+		if m.git.hasUpstream {
+			return m, gitCommandInProject(path, "push")
+		}
+		return m, gitCommandInProject(path, "push", "-u", "origin", m.git.branch)
+
+	case "Back":
+		return m.goBack(), nil
+	}
+	return m, nil
+}
+
+// gitCommandInProject runs a git command in a project and reports its output
+func gitCommandInProject(path string, args ...string) tea.Cmd {
+	return func() tea.Msg {
+		out, err := exec.Command("git", append([]string{"-C", path}, args...)...).CombinedOutput()
+		output := strings.TrimSpace(string(out))
+		if output == "" {
+			output = "(nothing to report)"
+		}
+		if err != nil {
+			return cmdFinishedMsg{err: fmt.Errorf("git %s failed", args[0]), output: output}
+		}
+		return cmdFinishedMsg{output: fmt.Sprintf("git %s:\n%s", args[0], output)}
+	}
+}
+
+// isGitRepo reports whether path has a .git directory (or file, for worktrees)
+func isGitRepo(path string) bool {
+	if path == "" {
+		return false
+	}
+	_, err := os.Stat(filepath.Join(path, ".git"))
+	return err == nil
+}
+
+// gitPullProject runs `git pull` in a single project and reports the result
+func gitPullProject(path string) tea.Cmd {
+	return func() tea.Msg {
+		branch := "?"
+		if out, err := exec.Command("git", "-C", path, "rev-parse", "--abbrev-ref", "HEAD").Output(); err == nil {
+			branch = strings.TrimSpace(string(out))
+		}
+
+		cmd := exec.Command("git", "-C", path, "pull")
+		out, err := cmd.CombinedOutput()
+		output := strings.TrimSpace(string(out))
+		if err != nil {
+			return cmdFinishedMsg{err: fmt.Errorf("git pull failed on %s", branch), output: output}
+		}
+		return cmdFinishedMsg{output: fmt.Sprintf("git pull (%s):\n%s", branch, output)}
+	}
 }
 
 func (m *model) loadSessions() {
@@ -678,6 +1042,20 @@ func (m *model) loadSessions() {
 	for name := range sessions {
 		m.sessionNames = append(m.sessionNames, name)
 	}
+	// Map order is random; keep the list stable so numbered entry is predictable
+	sort.Strings(m.sessionNames)
+}
+
+// currentTmuxSession returns the session commandy is running inside, or ""
+func currentTmuxSession() string {
+	if !isInsideTmux() {
+		return ""
+	}
+	out, err := exec.Command("tmux", "display-message", "-p", "#{session_name}").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func (m model) handleSessions(selected string) (model, tea.Cmd) {
@@ -702,7 +1080,18 @@ func (m model) handleSessionActions(selected string) (model, tea.Cmd) {
 		}
 		return m, execAndQuit("tmux", "attach", "-t", m.selectedSession)
 	case "Kill session":
-		exec.Command("tmux", "kill-session", "-t", m.selectedSession).Run()
+		// Killing the session commandy itself runs in would take commandy down
+		// with it (the pane dies), which looks like commandy "just closing".
+		if cur := currentTmuxSession(); cur != "" && cur == m.selectedSession {
+			m.message = fmt.Sprintf("'%s' is the session commandy is running in. Detach first (Ctrl+A d) and kill it from outside, or exit its windows.", cur)
+			m.messageType = "error"
+			return m, nil
+		}
+		if out, err := exec.Command("tmux", "kill-session", "-t", m.selectedSession).CombinedOutput(); err != nil {
+			m.message = fmt.Sprintf("Could not kill '%s': %s", m.selectedSession, strings.TrimSpace(string(out)))
+			m.messageType = "error"
+			return m, nil
+		}
 		m.message = fmt.Sprintf("Killed tmux session '%s'", m.selectedSession)
 		m.messageType = "success"
 		m.loadSessions()
@@ -1356,6 +1745,18 @@ func (m model) View() string {
 		return s.String()
 	}
 
+	// Help guide
+	if m.state == stateHelp {
+		s.WriteString(renderCopyPasteHelp())
+		s.WriteString("\n")
+	}
+
+	// Git summary
+	if m.state == stateGitMenu {
+		s.WriteString(m.renderGitInfo())
+		s.WriteString("\n")
+	}
+
 	// Empty sessions message
 	if m.state == stateSessions && len(m.sessionNames) == 0 {
 		s.WriteString(dimStyle.Render("  No active tmux sessions"))
@@ -1377,7 +1778,7 @@ func (m model) View() string {
 				style = selectedStyle
 			}
 
-			num := dimStyle.Render(fmt.Sprintf("%d) ", i+1))
+			num := dimStyle.Render(fmt.Sprintf("%d) ", menuNumber(items, i)))
 			s.WriteString(cursor + num + style.Render(item) + "\n")
 		}
 	}
@@ -1398,6 +1799,9 @@ func (m model) View() string {
 
 	// Help
 	s.WriteString("\n")
+	if m.numBuf != "" {
+		s.WriteString(dimStyle.Render("number: ") + selectedStyle.Render(m.numBuf+"_") + "\n")
+	}
 	if m.state == stateBrowseProjects || m.state == stateSelectProject {
 		s.WriteString(dimStyle.Render("←/→ columns • ↑/↓ navigate • enter select • q/esc back"))
 	} else {
@@ -1416,7 +1820,14 @@ func (m model) getMenuTitle() string {
 	case stateProjectActions:
 		return fmt.Sprintf("Project: %s", m.selectedProject)
 	case stateSessions:
+		if cur := currentTmuxSession(); cur != "" {
+			return fmt.Sprintf("Tmux Sessions  (you are in '%s')", cur)
+		}
 		return "Tmux Sessions"
+	case stateHelp:
+		return "Help: copy & paste"
+	case stateGitMenu:
+		return fmt.Sprintf("Git: %s", m.selectedProject)
 	case stateSessionActions:
 		return fmt.Sprintf("Session: %s", m.selectedSession)
 	case stateSetupProject:
@@ -1441,6 +1852,50 @@ func (m model) getMenuTitle() string {
 	return ""
 }
 
+// renderCopyPasteHelp returns the keystroke guide shown in the Help menu.
+// Every copy inside tmux goes to the tmux buffer, this machine's clipboard,
+// and the clipboard of the Mac you're connected from (via ~/.local/bin/tmux-clip).
+func renderCopyPasteHelp() string {
+	keyStyle := lipgloss.NewStyle().Foreground(yellow).Bold(true).Width(26)
+	var s strings.Builder
+
+	section := func(title string) {
+		s.WriteString(subtitleStyle.Render(title) + "\n")
+	}
+	row := func(key, desc string) {
+		s.WriteString("  " + keyStyle.Render(key) + normalStyle.Render(desc) + "\n")
+	}
+
+	section("Copy (inside tmux)")
+	row("Mouse drag, release", "copy the selection")
+	row("Double / triple click", "copy a word / a line")
+	row("Ctrl+A  [", "enter copy mode (vi keys)")
+	row("   v  then  y", "start selection, then copy")
+	row("   Enter", "copy selection (alternative to y)")
+	row("   /  n  N", "search forward, next, previous")
+	row("   g  G  PgUp  PgDn", "top, bottom, page up / down")
+	row("   q  or  Esc", "leave copy mode")
+	s.WriteString(dimStyle.Render("  Copies land in the tmux buffer, this Mac's clipboard, and your Mac's clipboard.") + "\n\n")
+
+	section("Paste")
+	row("Cmd+V", "paste your Mac's clipboard into the current session")
+	row("Ctrl+A  ]", "paste the last tmux copy (shared by all sessions)")
+	row("Ctrl+A  =", "pick from earlier tmux copies")
+	s.WriteString("\n")
+
+	section("Terminal.app native (bypasses tmux)")
+	row("Option+drag, Cmd+C", "select visible text with Terminal itself")
+	s.WriteString("\n")
+
+	section("Sessions")
+	row("Ctrl+A  d", "detach (session keeps running)")
+	row("Ctrl+A  s", "switch between sessions")
+	row("Ctrl+A  |  /  -", "split pane right / below")
+	row("Ctrl+A  h j k l", "move between panes")
+
+	return s.String()
+}
+
 func (m model) renderTwoColumnMenu(items []string) string {
 	var s strings.Builder
 	colWidth := 28
@@ -1460,7 +1915,7 @@ func (m model) renderTwoColumnMenu(items []string) string {
 				cursor = cursorStyle.Render("> ")
 				style = selectedStyle
 			}
-			num := dimStyle.Render(fmt.Sprintf("%2d) ", leftIdx+1))
+			num := dimStyle.Render(fmt.Sprintf("%2d) ", menuNumber(items, leftIdx)))
 
 			indicator := ""
 			indicatorLen := 0
@@ -1494,7 +1949,7 @@ func (m model) renderTwoColumnMenu(items []string) string {
 				cursor = cursorStyle.Render("> ")
 				style = selectedStyle
 			}
-			num := dimStyle.Render(fmt.Sprintf("%2d) ", rightIdx+1))
+			num := dimStyle.Render(fmt.Sprintf("%2d) ", menuNumber(items, rightIdx)))
 
 			indicator := ""
 			indicatorLen := 0

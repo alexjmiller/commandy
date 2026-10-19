@@ -12,7 +12,8 @@ Commandy displays a menu on terminal startup with host-specific options:
 3. Tools
 4. Connect to mac
 5. Sessions (tmux session manager)
-6. Skip
+6. Help (copy/paste keystroke guide)
+7. Exit
 
 **On `mac` (MacBook):**
 1. Connect to dev
@@ -47,7 +48,7 @@ Uses `os.Hostname()` to determine which machine-specific options to show:
 
 On machines with tmux available:
 - **Browse Projects** opens projects in named tmux sessions (`tmux new -s <project-name>`)
-- **Sessions** menu lists active tmux sessions with attach/kill options
+- **Sessions** menu lists active tmux sessions (sorted) with attach/kill options. Killing a session returns to the list. Commandy refuses to kill the session it is itself running in (the title shows which one), since that would kill commandy's own pane — detach first and kill from outside.
 - **Claude-logged** launches Claude in a separate tmux session. Commandy stays alive in the background using `tmux wait-for` to block until Claude finishes. When the Claude session ends (signalling via `tmux wait-for -S done-<session>`), the tmux session auto-closes and commandy returns to the main menu — no stale sessions left behind.
 
 Without tmux, commands fall back to direct shell execution.
@@ -122,6 +123,14 @@ Lists all directories in `~/Projects` and allows:
 - Launching Claude in that project (returns to commandy on exit) — default first option
 - Opening the folder in a tmux session (or new shell without tmux)
 - If an existing tmux session exists for the project, "Attach" becomes the first option above Claude
+- **New shell window** (only with an existing session) — opens a plain shell in a new window of that session, in the project folder, and attaches; for running a dev server or other commands alongside a Claude session (switch windows with Ctrl+A n / p)
+- **Git** — opens a submenu that adapts to the folder (`loadGitInfo`): a summary at the top shows last commit (relative + absolute date, subject), branch with ahead/behind vs upstream, uncommitted file count, and remote URL. Items: `Git init` only when the folder is not a repo; otherwise `Git status`, `Git log` (last 10), and `Git pull` / `Git push` only when a remote exists (push uses `-u origin <branch>` if there is no upstream yet). Commands run in the background and show git's own output; nothing is ever stashed, reset, or force-pushed, so a dirty tree makes pull fail with git's message. The summary refreshes after each command.
+
+## Menu Number Entry
+Menus accept multi-digit numbers. Typing a digit moves the cursor; if another digit could still form a valid item number (e.g. `1` with 12+ items) it waits ~700ms for it, showing `number: 1_`. A second digit, Enter, or the timeout selects. Out-of-range entries are discarded. The trailing "Back" item is pinned (`pinnedBack`) to **9** in short menus and **99** in menus with 10+ items, so it sits on the same key everywhere regardless of item count; in long menus `9` waits for a second digit. The main menu has no Back and Exit keeps its natural number, so a repeated `9` never exits by accident.
+
+## Help
+Root-menu entry showing a keystroke guide for copy/paste inside tmux (`renderCopyPasteHelp`). Copies inside tmux go to the tmux buffer, dev.lan's clipboard, and the connecting Mac's clipboard via `~/.local/bin/tmux-clip` (configured in `~/.tmux.conf`, because Apple Terminal.app ignores OSC 52). Keep the guide in sync with `~/.tmux.conf` if bindings change.
 
 ## Setup New Project
 - Creates new directory in `~/Projects`
@@ -136,10 +145,12 @@ The binary is set up globally via `.zshrc`:
 # In ~/.zshrc
 export CLAUDE_LOGGER_API="http://zynx.lan:3000"
 export PATH="$HOME/Projects/commandy:$PATH"
-if [[ $- == *i* ]]; then
+if [[ $- == *i* && -z "$TMUX" ]]; then
     commandy
 fi
 ```
+
+The `-z "$TMUX"` guard matters: tmux sessions that commandy opens ("Start working here", "Open") run an interactive zsh, which would otherwise relaunch commandy and show the main menu inside the new session instead of a prompt.
 
 ### Building
 
