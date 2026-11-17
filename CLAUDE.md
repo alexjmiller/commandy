@@ -117,8 +117,11 @@ Centralized port management across the local network via Port Authority service.
 When selecting a project for npm operations or Prisma Studio:
 - Lists all projects with `package.json` in ~/Projects
 - Also lists subdirectories with `package.json` (for monorepos like fintrac/backend, fintrac/frontend)
+- Uses the same three-column layout as Browse Projects (see below)
 
 ## Browse Projects
+The list is laid out in up to three columns (`renderColumnMenu`), filled top-to-bottom then into the next column, and stretched to the terminal width. Columns never go below 28 characters (`menuMinColWidth`), so it drops to two columns under 84 characters wide and one under 56. ↑/↓ move linearly through the list; ←/→ jump between columns, and → onto a shorter last column lands on its last item. Names too long for a column are truncated with `...`; a green ● marks projects with an active tmux session.
+
 Lists all directories in `~/Projects` and allows:
 - Launching Claude in that project (returns to commandy on exit) — default first option
 - Opening the folder in a tmux session (or new shell without tmux)
