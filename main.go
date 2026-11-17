@@ -319,56 +319,35 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.goBack(), nil
 
 		case "up", "k":
-			items := m.getMenuItems()
-			if m.state == stateBrowseProjects || m.state == stateSelectProject {
-				// Two-column navigation: up moves within column
-				rows := (len(items) + 1) / 2
-				if m.cursor > 0 && m.cursor < rows {
-					m.cursor--
-				} else if m.cursor >= rows && m.cursor > rows {
-					m.cursor--
-				} else if m.cursor == rows {
-					m.cursor = rows - 1
-				}
-			} else {
-				if m.cursor > 0 {
-					m.cursor--
-				}
+			// Column lists run top-to-bottom then into the next column, so
+			// up/down are linear there too
+			if m.cursor > 0 {
+				m.cursor--
 			}
 
 		case "down", "j":
 			items := m.getMenuItems()
-			if m.state == stateBrowseProjects || m.state == stateSelectProject {
-				// Two-column navigation: down moves within column
-				rows := (len(items) + 1) / 2
-				if m.cursor < rows-1 {
-					m.cursor++
-				} else if m.cursor >= rows && m.cursor < len(items)-1 {
-					m.cursor++
-				} else if m.cursor == rows-1 && rows < len(items) {
-					m.cursor = rows
-				}
-			} else {
-				if m.cursor < len(items)-1 {
-					m.cursor++
-				}
+			if m.cursor < len(items)-1 {
+				m.cursor++
 			}
 
 		case "left", "h":
-			items := m.getMenuItems()
 			if m.state == stateBrowseProjects || m.state == stateSelectProject {
-				rows := (len(items) + 1) / 2
+				rows := m.columnRows(len(m.getMenuItems()))
 				if m.cursor >= rows {
 					m.cursor -= rows
 				}
 			}
 
 		case "right", "l":
-			items := m.getMenuItems()
 			if m.state == stateBrowseProjects || m.state == stateSelectProject {
-				rows := (len(items) + 1) / 2
-				if m.cursor < rows && m.cursor+rows < len(items) {
+				n := len(m.getMenuItems())
+				rows := m.columnRows(n)
+				if m.cursor+rows < n {
 					m.cursor += rows
+				} else if m.cursor/rows < (n-1)/rows {
+					// Next column is shorter than this row: land on its last item
+					m.cursor = n - 1
 				}
 			}
 
@@ -1863,9 +1842,9 @@ func (m model) View() string {
 	// Menu items
 	items := m.getMenuItems()
 
-	// Two-column layout for project lists
+	// Multi-column layout for project lists
 	if m.state == stateBrowseProjects || m.state == stateSelectProject {
-		s.WriteString(m.renderTwoColumnMenu(items))
+		s.WriteString(m.renderColumnMenu(items))
 	} else {
 		for i, item := range items {
 			cursor := "  "
@@ -1994,78 +1973,85 @@ func renderCopyPasteHelp() string {
 	return s.String()
 }
 
-func (m model) renderTwoColumnMenu(items []string) string {
-	var s strings.Builder
-	colWidth := 28
+const (
+	menuMinColWidth = 28 // cursor (2) + number (4) + name + session dot
+	menuMaxCols     = 3
+)
 
-	// Calculate rows needed (items split across 2 columns)
-	rows := (len(items) + 1) / 2
+// menuColumns is how many columns the project lists use: three when the
+// terminal is wide enough, fewer on narrow ones.
+func (m model) menuColumns() int {
+	cols := menuMaxCols
+	if m.width > 0 {
+		for cols > 1 && cols*menuMinColWidth > m.width {
+			cols--
+		}
+	}
+	return cols
+}
+
+// menuColWidth stretches the columns to fill the terminal width.
+func (m model) menuColWidth() int {
+	if w := m.width / m.menuColumns(); w > menuMinColWidth {
+		return w
+	}
+	return menuMinColWidth
+}
+
+// columnRows is the number of rows needed to lay n items out in columns.
+func (m model) columnRows(n int) int {
+	cols := m.menuColumns()
+	rows := (n + cols - 1) / cols
+	if rows < 1 {
+		rows = 1
+	}
+	return rows
+}
+
+// renderColumnMenu lays items out column-major (down the first column, then
+// the next), matching the cursor movement in Update.
+func (m model) renderColumnMenu(items []string) string {
+	var s strings.Builder
+	cols := m.menuColumns()
+	rows := m.columnRows(len(items))
+	colWidth := m.menuColWidth()
 
 	for row := 0; row < rows; row++ {
-		leftIdx := row
-		rightIdx := row + rows
+		for col := 0; col < cols; col++ {
+			idx := col*rows + row
+			if idx >= len(items) {
+				break
+			}
 
-		// Left column
-		if leftIdx < len(items) {
 			cursor := "  "
 			style := normalStyle
-			if leftIdx == m.cursor {
+			if idx == m.cursor {
 				cursor = cursorStyle.Render("> ")
 				style = selectedStyle
 			}
-			num := dimStyle.Render(fmt.Sprintf("%2d) ", menuNumber(items, leftIdx)))
+			num := dimStyle.Render(fmt.Sprintf("%2d) ", menuNumber(items, idx)))
 
 			indicator := ""
 			indicatorLen := 0
-			if m.state == stateBrowseProjects && items[leftIdx] != "Back to menu" {
-				if m.activeSessions[sanitizeTmuxName(items[leftIdx])] {
+			if m.state == stateBrowseProjects && items[idx] != "Back to menu" {
+				if m.activeSessions[sanitizeTmuxName(items[idx])] {
 					indicator = " " + lipgloss.NewStyle().Foreground(green).Render("●")
 					indicatorLen = 2
 				}
 			}
 
-			item := items[leftIdx]
-			maxLen := colWidth - 6 - indicatorLen
-			if len(item) > maxLen {
-				item = item[:maxLen-3] + "..."
-			}
-			leftCol := cursor + num + style.Render(item) + indicator
-			padding := colWidth - len(items[leftIdx]) - 6 - indicatorLen
-			if padding < 0 {
-				padding = 0
-			}
-			s.WriteString(leftCol + strings.Repeat(" ", padding))
-		} else {
-			s.WriteString(strings.Repeat(" ", colWidth))
-		}
-
-		// Right column
-		if rightIdx < len(items) {
-			cursor := "  "
-			style := normalStyle
-			if rightIdx == m.cursor {
-				cursor = cursorStyle.Render("> ")
-				style = selectedStyle
-			}
-			num := dimStyle.Render(fmt.Sprintf("%2d) ", menuNumber(items, rightIdx)))
-
-			indicator := ""
-			indicatorLen := 0
-			if m.state == stateBrowseProjects && items[rightIdx] != "Back to menu" {
-				if m.activeSessions[sanitizeTmuxName(items[rightIdx])] {
-					indicator = " " + lipgloss.NewStyle().Foreground(green).Render("●")
-					indicatorLen = 2
-				}
-			}
-
-			item := items[rightIdx]
-			maxLen := colWidth - 6 - indicatorLen
+			// Keep at least one space before the next column
+			item := items[idx]
+			maxLen := colWidth - 7 - indicatorLen
 			if len(item) > maxLen {
 				item = item[:maxLen-3] + "..."
 			}
 			s.WriteString(cursor + num + style.Render(item) + indicator)
-		}
 
+			if col < cols-1 && idx+rows < len(items) {
+				s.WriteString(strings.Repeat(" ", colWidth-6-len(item)-indicatorLen))
+			}
+		}
 		s.WriteString("\n")
 	}
 
